@@ -1,0 +1,14 @@
+celery
+minio
+Django
+pydub
+Pillow
+PyPDF2
+python-docx
+pandas
+ffmpeg-python
+whisper
+python-pptx
+djongo
+openai-whisper
+redis
