@@ -1,8 +1,7 @@
 from celery import shared_task
-from minio import Minio
-from django.conf import settings
 import os
 import tempfile
+from pptx import Presentation
 import whisper
 import ffmpeg
 import pandas as pd
@@ -37,7 +36,6 @@ AudioSegment.ffmpeg = FFMPEG_EXE
 AudioSegment.ffprobe = FFPROBE_EXE
 
 
-# DEFAULT_BUCKET_NAME = "my-data-lake"
 
 @shared_task
 def fetch_all_buckets_and_objects():
@@ -112,12 +110,12 @@ def auto_discover_and_process(bucket_name=None, filename=None):
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
         elif ftype == "xml":
             if not XmlFile.objects.filter(filename=filename).exists():
-                process_xml.delay(filename)
+                process_xml.delay(bucket_name,filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
         elif ftype == "log":
             if not LogFile.objects.filter(filename=filename).exists():
-                process_log.delay(filename)
+                process_log.delay(bucket_name,filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
         elif ftype == "archive":
@@ -132,6 +130,55 @@ def auto_discover_and_process(bucket_name=None, filename=None):
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
         else:
             print(f"[TASK] ⚠️ Unknown file type: {filename}")
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_image(self, bucket_name, object_name):
+    print(f"[TASK] 📷 Processing image: {object_name} from bucket: {bucket_name}")
+    temp_path = None
+
+    try:
+        # Create temp file
+        suffix = os.path.splitext(object_name)[-1]
+        fd, temp_path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+
+        # Get MinIO client
+        client = minio_client
+
+        # Download object to temp file
+        client.fget_object(bucket_name, object_name, temp_path)
+
+        # Extract metadata with Pillow
+        with Image.open(temp_path) as img:
+            width, height = img.size
+            format = img.format
+
+            # Save record in DB
+            ImageFile.objects.create(
+                file_name=object_name,
+                file_path=temp_path,  # local temp path (optional)
+                file_size=os.path.getsize(temp_path),
+                width=width,
+                height=height,
+                format=format,
+                meta_data={
+                    "mode": img.mode,
+                    "info": img.info
+                }
+            )
+
+            print(f"[TASK] ✅ Image processed and stored in DB: {object_name}")
+
+    except Exception as e:
+        print(f"[TASK] ❌ Error processing image {object_name}: {e}")
+        raise self.retry(exc=e)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)  # clean up
+            except Exception:
+                pass
 
 @shared_task
 def process_audio(bucket_name, filename):
@@ -229,44 +276,6 @@ def process_video(bucket_name, filename):
         except Exception:
             pass
 
-@shared_task
-def process_image(bucket_name, object_name):
-    print(f"[TASK] 📷 Processing image: {object_name}")
-    client = Minio(
-        settings.MINIO_ENDPOINT,
-        access_key=settings.MINIO_ACCESS_KEY,
-        secret_key=settings.MINIO_SECRET_KEY,
-        secure=False
-    )
-    temp_path = None
-    try:
-        fd, temp_path = tempfile.mkstemp(suffix=os.path.splitext(object_name)[-1])
-        os.close(fd)
-        client.fget_object(bucket_name, object_name, temp_path)
-        with Image.open(temp_path) as img:
-            width, height = img.size
-            format = img.format
-            ImageFile.objects.create(
-                file_name=object_name,
-                file_path=temp_path,
-                file_size=os.path.getsize(temp_path),
-                width=width,
-                height=height,
-                format=format,
-                meta_data={
-                    "mode": img.mode,
-                    "info": img.info
-                }
-            )
-            print(f"[TASK] ✅ Image processed: {object_name}")
-    except Exception as e:
-        print(f"[TASK] ❌ Error processing image {object_name}: {e}")
-    finally:
-        try:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-        except Exception:
-            pass
 
 @shared_task
 def process_doc(bucket_name, object_name):
@@ -416,30 +425,61 @@ def process_log(bucket_name, filename):
             meta_data={"error": str(e)}
         )
 
-@shared_task
-def process_ppt(bucket_name, filename):
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_ppt(self, bucket_name, filename):
     print(f"[TASK] 📑 PPT: {filename}")
     tmp_path = None
+
     try:
+        # Create a temporary file
         fd, tmp_path = tempfile.mkstemp(suffix=".pptx")
         os.close(fd)
-        minio_client.fget_object(bucket_name, filename, filename, tmp_path)
-        # Placeholder for actual PPT extraction logic
-        content = "PPT EXTRACT PLACEHOLDER"
+
+        # ✅ Correct MinIO download
+        minio_client.fget_object(bucket_name, filename, tmp_path)
+
+        # ✅ Extract PPT content
+        presentation = Presentation(tmp_path)
+
+        extracted_text = []
+        for slide in presentation.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    extracted_text.append(shape.text)
+
+        content = "\n".join(extracted_text) if extracted_text else "No text extracted"
+
+        # ✅ Metadata (must be JSON serializable)
+        props = presentation.core_properties
+        meta_data = {
+                "author": str(props.author or ""),
+                "title": str(props.title or ""),
+                "subject": str(props.subject or ""),
+                "category": str(props.category or ""),
+                "keywords": str(props.keywords or ""),
+                "slides_count": int(len(presentation.slides)),
+            }
+
+        # ✅ Save to DB
         PPTFile.objects.create(
             filename=filename,
             content=content,
-            status="completed"
+            status="completed",
+            meta_data=meta_data,
         )
+
         print(f"[TASK] ✅ PPT processed: {filename}")
+
     except Exception as e:
         print(f"[TASK] ❌ Error processing PPT {filename}: {e}")
+        raise self.retry(exc=e)
+
     finally:
-        try:
-            if tmp_path and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
+            try:
                 os.remove(tmp_path)
-        except Exception:
-            pass
+            except Exception:
+                pass
 
 @shared_task
 def process_spreadsheet(bucket_name, object_name):
