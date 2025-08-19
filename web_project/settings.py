@@ -76,7 +76,7 @@ WSGI_APPLICATION = 'web_project.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'djongo',
-        'NAME': 'xtremand',  # your MongoDB database name
+        'NAME': 'xtremand2',  # your MongoDB database name
         'ENFORCE_SCHEMA': False,
         'CLIENT': {
             'host': 'mongodb://localhost:27017',
