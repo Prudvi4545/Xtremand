@@ -76,12 +76,12 @@ WSGI_APPLICATION = 'web_project.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'djongo',
-        'NAME': 'xtremand2',  # your MongoDB database name
+        'NAME': 'xtremand_qa',  # your MongoDB database name
         'ENFORCE_SCHEMA': False,
         'CLIENT': {
             'host': 'mongodb://localhost:27017',
             'username': 'admin',      # optional, if you use auth
-            'password': 'password',  # optional, if you use auth
+            'password': 'StrongAdminPassword123',  # optional, if you use auth
             # 'authSource': 'admin',            # optional, if you use auth
         }
     }
