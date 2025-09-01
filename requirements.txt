@@ -10,7 +10,6 @@ pandas
 ffmpeg-python
 whisper
 python-pptx
-djongo
 openai-whisper
 redis
 pyyaml
