@@ -7,5 +7,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('', views.home, name='home'),  # ✅ Welcome page
     path('process/', views.start_auto_processing, name='process'),  # ✅ Correct task trigger
-    path('minio-event/', minio_event_webhook, name='minio_event_webhook'),
+    path('minio_event_webhook/', minio_event_webhook, name='minio_event_webhook'),
 ]

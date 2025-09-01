@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -73,19 +74,36 @@ WSGI_APPLICATION = 'web_project.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'djongo',
-        'NAME': 'xtremand_qa',  # your MongoDB database name
-        'ENFORCE_SCHEMA': False,
-        'CLIENT': {
-            'host': 'mongodb://localhost:27017',
-            'username': 'admin',      # optional, if you use auth
-            'password': 'StrongAdminPassword123',  # optional, if you use auth
-            # 'authSource': 'admin',            # optional, if you use auth
+DB_ENV = os.environ.get('DJANGO_DB_ENV', 'local')  # default to 'local'
+
+if DB_ENV == 'server':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'djongo',
+            'NAME': 'xtremand_qa',
+            'ENFORCE_SCHEMA': False,
+            'CLIENT': {
+                'host': 'mongodb://172.16.17.161:27017',
+                'username': 'Xtremand',
+                'password': 'Xtremand@321',
+                # 'authSource': 'admin',
+            }
         }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'djongo',
+            'NAME': 'xtremand_qa',
+            'ENFORCE_SCHEMA': False,
+            'CLIENT': {
+                'host': 'mongodb://localhost:27017',
+                'username': 'admin',
+                'password': 'StrongAdminPassword123',
+                # 'authSource': 'admin',
+            }
+        }
+    }
 
 
 # Password validation
