@@ -620,4 +620,5 @@ def process_yaml(bucket_name, filename):
 def process_minio_file(bucket_name, object_key):
     """Triggered by MinIO event webhook for new files."""
     print(f"[TASK] 🚀 New file event: {object_key} in bucket: {bucket_name}")
-    auto_discover_and_process(bucket_name, object_key)
+    # ✅ Use Celery async task dispatch
+    auto_discover_and_process.delay(bucket_name, object_key)
