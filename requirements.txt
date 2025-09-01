@@ -13,3 +13,4 @@ python-pptx
 openai-whisper
 redis
 pyyaml
+mongoengine
