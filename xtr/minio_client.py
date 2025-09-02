@@ -1,12 +1,17 @@
 from minio import Minio
 import os
 
+# Use environment variables for MinIO credentials and host
+MINIO_HOST = os.environ.get('MINIO_HOST', '172.16.17.161:9000')
+MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY', 'Xtremand')
+MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY', 'Xtremand@321')
+MINIO_SECURE = os.environ.get('MINIO_SECURE', 'False').lower() == 'true'
 
 minio_client = Minio(
-    "172.16.17.161:9000",  
-    access_key="Xtremand",
-    secret_key="Xtremand@321",
-    secure=False
+    MINIO_HOST,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=MINIO_SECURE
 )
 print("MinIO client initialized.")
 print(minio_client)

@@ -1,12 +1,15 @@
 from mongoengine import *
+from datetime import datetime
 
-
+# ------------------------
+# Audio, Video, Document Files
+# ------------------------
 class AudioFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class VideoFile(Document):
@@ -14,8 +17,7 @@ class VideoFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
-
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class DocumentFile(Document):
@@ -23,8 +25,7 @@ class DocumentFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
-
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class HtmlFile(Document):
@@ -32,7 +33,7 @@ class HtmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class JsonFile(Document):
@@ -40,7 +41,7 @@ class JsonFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class XmlFile(Document):
@@ -48,7 +49,7 @@ class XmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class LogFile(Document):
@@ -56,8 +57,7 @@ class LogFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
-
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class PPTFile(Document):
@@ -65,7 +65,7 @@ class PPTFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class SpreadsheetFile(Document):
@@ -73,7 +73,7 @@ class SpreadsheetFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class ArchiveFile(Document):
@@ -81,17 +81,19 @@ class ArchiveFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
 class YamlFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     content = StringField()
     status = StringField(max_length=20, default='pending')
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
 
-
+# ------------------------
+# Images
+# ------------------------
 class ImageFile(Document):
     file_name = StringField(max_length=255, unique=True, required=True)
     file_path = StringField(max_length=1024)
@@ -100,7 +102,7 @@ class ImageFile(Document):
     height = IntField()
     format = StringField(max_length=50)
     meta_data = DictField()
-    created_at = DateTimeField(required=True)
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
 
     def __str__(self):
         return self.file_name
