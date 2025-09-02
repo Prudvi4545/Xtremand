@@ -52,6 +52,85 @@ def fetch_all_buckets_and_objects():
     except Exception as e:
         print(f"[TASK] Error fetching buckets/objects: {e}")
 
+# @shared_task
+# def auto_discover_and_process(bucket_name=None, filename=None):
+#     bucket_name = bucket_name 
+
+#     if filename:
+#         objects = [type('obj', (object,), {'object_name': filename})]
+#         print(f"[TASK] Processing specific file: {filename} in bucket: {bucket_name}")
+#     else:
+#         print(f"[TASK] 🔍 Scanning bucket: {bucket_name}")
+#         objects = list_objects(bucket_name)
+
+#     for obj in objects:
+#         filename = obj.object_name.strip()
+#         ftype = detect_file_type(filename)
+#         print(f"[TASK] ➡️ Found: {filename} (type: {ftype}) in bucket: {bucket_name}")
+
+#         if ftype == "audio":
+#             if not AudioFile.objects.filter(filename=filename).exists():
+#                 process_audio.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "video":
+#             if not VideoFile.objects.filter(filename=filename).exists():
+#                 process_video.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "image":
+#             if not ImageFile.objects.filter(file_name=filename).exists():
+#                 process_image.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "document":
+#             if not DocumentFile.objects.filter(filename=filename).exists():
+#                 process_doc.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "presentation":
+#             if not PPTFile.objects.filter(filename=filename).exists():
+#                 process_ppt.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "spreadsheet":
+#             if not SpreadsheetFile.objects.filter(filename=filename, status="completed").exists():
+#                 process_spreadsheet.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "html":
+#             if not HtmlFile.objects.filter(filename=filename).exists():
+#                 process_html.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "json":
+#             if not JsonFile.objects.filter(filename=filename).exists():
+#                 process_json.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "xml":
+#             if not XmlFile.objects.filter(filename=filename).exists():
+#                 process_xml.delay(bucket_name,filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "log":
+#             if not LogFile.objects.filter(filename=filename).exists():
+#                 process_log.delay(bucket_name,filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "archive":
+#             if not ArchiveFile.objects.filter(filename=filename).exists():
+#                 process_archive.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         elif ftype == "yaml":
+#             if not YamlFile.objects.filter(filename=filename).exists():
+#                 process_yaml.delay(bucket_name, filename)
+#             else:
+#                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+#         else:
+#             print(f"[TASK] ⚠️ Unknown file type: {filename}")
+
 @shared_task
 def auto_discover_and_process(bucket_name=None, filename=None):
     bucket_name = bucket_name 
@@ -69,68 +148,79 @@ def auto_discover_and_process(bucket_name=None, filename=None):
         print(f"[TASK] ➡️ Found: {filename} (type: {ftype}) in bucket: {bucket_name}")
 
         if ftype == "audio":
-            if not AudioFile.objects.filter(filename=filename).exists():
+            if not AudioFile.objects(filename=filename).first():
                 process_audio.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "video":
-            if not VideoFile.objects.filter(filename=filename).exists():
+            if not VideoFile.objects(filename=filename).first():
                 process_video.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "image":
-            if not ImageFile.objects.filter(file_name=filename).exists():
+            if not ImageFile.objects(file_name=filename).first():
                 process_image.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "document":
-            if not DocumentFile.objects.filter(filename=filename).exists():
+            if not DocumentFile.objects(filename=filename).first():
                 process_doc.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "presentation":
-            if not PPTFile.objects.filter(filename=filename).exists():
+            if not PPTFile.objects(filename=filename).first():
                 process_ppt.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "spreadsheet":
-            if not SpreadsheetFile.objects.filter(filename=filename, status="completed").exists():
+            if not SpreadsheetFile.objects(filename=filename, status="completed").first():
                 process_spreadsheet.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "html":
-            if not HtmlFile.objects.filter(filename=filename).exists():
+            if not HtmlFile.objects(filename=filename).first():
                 process_html.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "json":
-            if not JsonFile.objects.filter(filename=filename).exists():
+            if not JsonFile.objects(filename=filename).first():
                 process_json.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "xml":
-            if not XmlFile.objects.filter(filename=filename).exists():
-                process_xml.delay(bucket_name,filename)
+            if not XmlFile.objects(filename=filename).first():
+                process_xml.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "log":
-            if not LogFile.objects.filter(filename=filename).exists():
-                process_log.delay(bucket_name,filename)
+            if not LogFile.objects(filename=filename).first():
+                process_log.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "archive":
-            if not ArchiveFile.objects.filter(filename=filename).exists():
+            if not ArchiveFile.objects(filename=filename).first():
                 process_archive.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         elif ftype == "yaml":
-            if not YamlFile.objects.filter(filename=filename).exists():
+            if not YamlFile.objects(filename=filename).first():
                 process_yaml.delay(bucket_name, filename)
             else:
                 print(f"[TASK] ⏭️ Skipped: {filename} (already processed)")
+
         else:
             print(f"[TASK] ⚠️ Unknown file type: {filename}")
-
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def process_image(self, bucket_name, object_name):
