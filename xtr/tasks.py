@@ -1,3 +1,5 @@
+from indic_transliteration import sanscript
+import datetime
 from celery import shared_task
 import os, tempfile, platform, zipfile, tarfile, json, yaml
 import pandas as pd
@@ -8,6 +10,7 @@ import whisper, ffmpeg
 from pptx import Presentation
 from pydub import AudioSegment
 from PIL import Image
+import logging
 
 from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
@@ -120,35 +123,120 @@ def process_image(self, bucket_name, object_name):
         if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
 
 
-@shared_task
-def process_audio(bucket_name, filename):
-    print(f"[TASK] 🎧 Audio: {filename}")
-    tmp, wav_path = None, None
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# ----------------------------
+# Load Whisper model once per worker
+# ----------------------------
+MODEL_NAME = "base"
+try:
+    WHISPER_MODEL = whisper.load_model(MODEL_NAME)
+    logger.info(f"Loaded Whisper model: {MODEL_NAME}")
+except Exception as e:
+    logger.error(f"Failed to load Whisper model: {e}")
+    WHISPER_MODEL = None
+
+# ----------------------------
+# Indic language script mapping
+# ----------------------------
+LANGUAGE_SCRIPT_MAP = {
+    "te": sanscript.TELUGU,
+    "hi": sanscript.DEVANAGARI,
+    "kn": sanscript.KANNADA,
+    "ml": sanscript.MALAYALAM,
+    "ta": sanscript.TAMIL,
+    "bn": sanscript.BENGALI,
+}
+
+
+def fix_script(text: str, detected_lang: str) -> str:
+    """
+    Convert text into the expected script for the detected language.
+    """
+    target_script = LANGUAGE_SCRIPT_MAP.get(detected_lang)
+    if not target_script:
+        return text  # Unknown language, skip
+
+    # Detect Devanagari chars in text for non-Hindi languages
+    if detected_lang != "hi" and any("\u0900" <= ch <= "\u097F" for ch in text):
+        try:
+            return transliterate(text, Subscript.DEVANAGARI, target_script) # type: ignore
+        except Exception:
+            return text
+    return text
+
+
+# ----------------------------
+# Celery task
+# ----------------------------
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def process_audio(self, bucket_name, filename):
+    if WHISPER_MODEL is None:
+        logger.error("Whisper model is not loaded. Task aborted.")
+        return
+
+    tmp_file, wav_file = None, None
     try:
-        model = whisper.load_model("base")
-        fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1]); os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
+        logger.info(f"[TASK] 🎧 Processing audio: {filename}")
 
+        # Download file from MinIO
+        fd, tmp_file = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
+        os.close(fd)
+        minio_client.fget_object(bucket_name, filename, tmp_file)
+
+        # Convert to WAV if not already
         if not filename.lower().endswith(".wav"):
-            wav_path = tmp + ".wav"
-            AudioSegment.from_file(tmp).export(wav_path, format="wav")
+            wav_file = tmp_file + ".wav"
+            AudioSegment.from_file(tmp_file).export(wav_file, format="wav")
         else:
-            wav_path = tmp
+            wav_file = tmp_file
 
-        result = model.transcribe(wav_path)
+        # Transcribe using Whisper
+        result = WHISPER_MODEL.transcribe(wav_file, task="transcribe")
+        text = result.get("text", "").strip()
+        detected_lang = result.get("language")
+
+        # Fix Indic scripts if needed
+        text = fix_script(text, detected_lang)
+
+        # Calculate accurate duration from segments
+        segments = result.get("segments", [])
+        duration_sec = segments[-1]["end"] if segments else None
+
+        # Save transcription in MongoDB
         AudioFile.objects.create(
             filename=filename,
-            content=result.get("text", ""),
+            content=text,
             status="completed",
-            meta_data={"detected_language": result.get("language")},
+            meta_data={
+                "detected_language": detected_lang,
+                "duration_sec": duration_sec,
+            },
         )
-        print(f"[TASK] ✅ Audio processed: {filename}")
-    except Exception as e:
-        AudioFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
-    finally:
-        for p in [tmp, wav_path]:
-            if p and os.path.exists(p): os.remove(p)
 
+        logger.info(f"[TASK] ✅ Audio processed: {filename}")
+
+    except Exception as exc:
+        logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
+        AudioFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(exc)},
+        )
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            logger.error(f"[TASK] Max retries reached for {filename}")
+
+    finally:
+        # Clean up temp files
+        for path in [tmp_file, wav_file]:
+            if path and os.path.exists(path):
+                os.remove(path)
+
+                
 
 @shared_task
 def process_video(bucket_name, filename):
@@ -174,28 +262,47 @@ def process_video(bucket_name, filename):
 
 
 @shared_task
-def process_doc(bucket_name, filename):
-    print(f"[TASK] 📄 Document: {filename}")
-    ext, tmp = os.path.splitext(filename)[-1].lower(), None
+def process_doc(bucket_name, object_name):
+    print(f"[TASK]  Document: {object_name}")
+    ext = os.path.splitext(object_name)[-1].lower()
+    tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(suffix=ext); os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
+        fd, tmp = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        minio_client.fget_object(bucket_name, object_name, tmp)
 
-        text = ""
         if ext == ".pdf":
-            reader = PyPDF2.PdfReader(open(tmp, "rb"))
-            text = "\n".join([p.extract_text() or "" for p in reader.pages])
+            with open(tmp, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                text = "\n".join(p.extract_text() or "" for p in reader.pages)
         elif ext == ".docx":
-            doc = Document(tmp); text = "\n".join([p.text for p in doc.paragraphs])
+            doc = Document(tmp)
+            text = "\n".join(p.text for p in doc.paragraphs)
         else:
-            text = open(tmp, encoding="utf-8", errors="ignore").read()
+            with open(tmp, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
 
-        DocumentFile.objects.create(filename=filename, content=text, status="completed", meta_data={"ext": ext})
-        print(f"[TASK] ✅ Document processed: {filename}")
+        DocumentFile.objects.create(
+            filename=object_name,
+            content=text,
+            status="completed",
+            meta_data={"ext": ext, "length": len(text)}
+        )
+        print(f"[TASK]  Document processed: {object_name}")
     except Exception as e:
-        DocumentFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+        DocumentFile.objects.create(
+            filename=object_name,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)}
+        )
+        print(f"[TASK]  Failed processing {object_name} — {e}")
     finally:
-        if tmp and os.path.exists(tmp): os.remove(tmp)
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except PermissionError as e:
+                print(f"[TASK]  Could not delete temp file {tmp}: {e}") 
 
 
 @shared_task
@@ -239,35 +346,119 @@ def process_log(bucket_name, filename):
         LogFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
 
+import os
+import tempfile
+import subprocess
+from pptx import Presentation
+from celery import shared_task
+from .models import PPTFile
+from .minio_client import minio_client
+
+
 @shared_task
 def process_ppt(bucket_name, filename):
-    tmp = None
+    tmp, converted = None, None
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".pptx"); os.close(fd)
+        ext = os.path.splitext(filename)[-1].lower()
+
+        # Download file from MinIO
+        fd, tmp = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
         minio_client.fget_object(bucket_name, filename, tmp)
+
+        # Handle .ppt (convert to .pptx)
+        if ext == ".ppt":
+            outdir = os.path.dirname(tmp)
+            basename = os.path.splitext(os.path.basename(tmp))[0]
+            subprocess.run(
+                ["libreoffice", "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            converted = os.path.join(outdir, basename + ".pptx")
+            if not os.path.exists(converted):
+                raise RuntimeError("Failed to convert .ppt to .pptx. Ensure LibreOffice is installed.")
+            tmp = converted  # switch to converted file
+
+        # Read presentation
         prs = Presentation(tmp)
-        text = "\n".join([sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text")])
-        PPTFile.objects.create(filename=filename, content=text, status="completed", meta_data={"slides": len(prs.slides)})
+        text = "\n".join(
+            [sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text")]
+        )
+
+        # Save result in DB
+        PPTFile.objects.create(
+            filename=filename,
+            content=text,
+            status="completed",
+            meta_data={"slides": len(prs.slides)},
+        )
         print(f"[TASK] ✅ PPT processed: {filename}")
+
     except Exception as e:
-        PPTFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+        PPTFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)},
+        )
+        print(f"[TASK] ❌ Failed PPT {filename}: {e}")
+
     finally:
-        if tmp and os.path.exists(tmp): os.remove(tmp)
+        for f in [tmp, converted]:
+            if f and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
 
 
-@shared_task
-def process_spreadsheet(bucket_name, filename):
+@shared_task(bind=True, autoretry_for=(OSError,), retry_backoff=True, max_retries=3)
+def process_spreadsheet(self, bucket_name, filename):
     tmp = None
     try:
         ext = os.path.splitext(filename)[-1].lower()
-        fd, tmp = tempfile.mkstemp(suffix=ext); os.close(fd)
+        fd, tmp = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+
+        # Download file from MinIO
         minio_client.fget_object(bucket_name, filename, tmp)
 
+        # Read spreadsheet based on extension
         if ext == ".csv":
             df = pd.read_csv(tmp)
-        else:
-            df = pd.read_excel(tmp)
 
+        elif ext == ".xlsx":
+            try:
+                import openpyxl
+                df = pd.read_excel(tmp, engine="openpyxl")
+            except ImportError as ie:
+                raise RuntimeError(
+                    "Missing dependency 'openpyxl'. Install with `pip install openpyxl`."
+                ) from ie
+
+        elif ext == ".xls":
+            try:
+                import xlrd
+                df = pd.read_excel(tmp, engine="xlrd")
+            except ImportError as ie:
+                raise RuntimeError(
+                    "Missing dependency 'xlrd'. Install with `pip install xlrd`."
+                ) from ie
+
+        elif ext == ".ods":
+            try:
+                df = pd.read_excel(tmp, engine="odf")
+            except ImportError as ie:
+                raise RuntimeError(
+                    "Missing dependency 'odfpy'. Install with `pip install odfpy`."
+                ) from ie
+
+        else:
+            raise ValueError(f"Unsupported spreadsheet format: {ext}")
+
+        # Save result
         SpreadsheetFile.objects.create(
             filename=filename,
             content=df.to_csv(index=False),
@@ -275,10 +466,19 @@ def process_spreadsheet(bucket_name, filename):
             meta_data={"columns": list(df.columns), "num_rows": len(df)},
         )
         print(f"[TASK] ✅ Spreadsheet processed: {filename}")
+
     except Exception as e:
-        SpreadsheetFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+        SpreadsheetFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)},
+        )
+        print(f"[TASK] ❌ Failed spreadsheet {filename}: {e}")
+
     finally:
-        if tmp and os.path.exists(tmp): os.remove(tmp)
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
 
 
 @shared_task

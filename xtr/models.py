@@ -66,7 +66,9 @@ class PPTFile(Document):
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
     created_at = DateTimeField(default=datetime.utcnow, required=True)
-
+    meta = {
+        'collection': 'ppt_file'  # Custom collection name
+    }
 
 class SpreadsheetFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)

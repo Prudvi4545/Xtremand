@@ -14,3 +14,7 @@ openai-whisper
 redis
 pyyaml
 mongoengine
+openpyxl
+xlrd
+odfpy
+indic-transliteration
