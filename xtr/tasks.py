@@ -240,31 +240,78 @@ def process_audio(self, bucket_name, filename):
             if path and os.path.exists(path):
                 os.remove(path)
 
-                
-
 @shared_task
-def process_video(bucket_name, filename):
-    print(f"[TASK] 🎬 Video: {filename}")
-    vpath, apath = None, None
+def process_video(video_id):
     try:
+        # Fetch the VideoFile instance
+        video = VideoFile.objects.get(id=video_id)
+        s3_key = video.s3_key  # Your stored S3 object key
+
+        print(f"[TASK] 🎬 Video: {s3_key}")
+
         if WHISPER_MODEL is None:
             raise RuntimeError("Whisper model not loaded on worker")
-        fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1]); os.close(fd)
-        with minio_client.get_object(bucket_name, filename) as data:
-            with open(vpath, "wb") as f: f.write(data.read())
+        
+        # Create a temporary file for the video
+        fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(s3_key)[-1])
+        os.close(fd)
+
+        # Download the video from S3
+        with minio_client.get_object(bucket_name, s3_key) as data:
+            with open(vpath, "wb") as f:
+                f.write(data.read())
 
         apath = tempfile.mktemp(suffix=".wav")
         # Use ffmpeg to extract audio track
         ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000").run(quiet=True, overwrite_output=True)
 
+        # Transcribe audio
         result = WHISPER_MODEL.transcribe(apath)
-        VideoFile.objects.create(filename=filename, content=result.get("text", ""), status="completed")
-        print(f"[TASK] ✅ Video processed: {filename}")
+
+        # Save result in database
+        VideoFile.objects.filter(id=video_id).update(
+            content=result.get("text", ""),
+            status="completed"
+        )
+        print(f"[TASK] ✅ Video processed: {s3_key}")
+
     except Exception as e:
-        VideoFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+        # Handle errors and update status
+        VideoFile.objects.filter(id=video_id).update(
+            content="",
+            status="failed",
+            meta_data={"error": str(e)}
+        )
+        print(f"[TASK] ❌ Error processing video: {s3_key} - {str(e)}")
     finally:
+        # Cleanup temporary files
         for p in [vpath, apath]:
-            if p and os.path.exists(p): os.remove(p)
+            if p and os.path.exists(p):
+                os.remove(p)                
+
+# @shared_task
+# def process_video(bucket_name, filename):
+#     print(f"[TASK] 🎬 Video: {filename}")
+#     vpath, apath = None, None
+#     try:
+#         if WHISPER_MODEL is None:
+#             raise RuntimeError("Whisper model not loaded on worker")
+#         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1]); os.close(fd)
+#         with minio_client.get_object(bucket_name, filename) as data:
+#             with open(vpath, "wb") as f: f.write(data.read())
+
+#         apath = tempfile.mktemp(suffix=".wav")
+#         # Use ffmpeg to extract audio track
+#         ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000").run(quiet=True, overwrite_output=True)
+
+#         result = WHISPER_MODEL.transcribe(apath)
+#         VideoFile.objects.create(filename=filename, content=result.get("text", ""), status="completed")
+#         print(f"[TASK] ✅ Video processed: {filename}")
+#     except Exception as e:
+#         VideoFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+#     finally:
+#         for p in [vpath, apath]:
+#             if p and os.path.exists(p): os.remove(p)
 
 
 @shared_task
