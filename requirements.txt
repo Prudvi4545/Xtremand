@@ -18,3 +18,5 @@ openpyxl
 xlrd
 odfpy
 indic-transliteration
+ebooklib
+beautifulsoup4

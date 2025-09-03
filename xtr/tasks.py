@@ -20,12 +20,16 @@ from .minio_client import minio_client, list_objects
 from .utils import detect_file_type, SPREADSHEET_EXTENSIONS
 
 # ✅ FFMPEG & Whisper setup
-if platform.system() == "Windows":
-    FFMPEG_EXE = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-    FFPROBE_EXE = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffprobe.exe"
-else:
-    FFMPEG_EXE = "/usr/bin/ffmpeg"
-    FFPROBE_EXE = "/usr/bin/ffprobe"
+# Make ffmpeg/ffprobe paths configurable for server environments
+FFMPEG_EXE = os.environ.get("FFMPEG_PATH")
+FFPROBE_EXE = os.environ.get("FFPROBE_PATH")
+if not FFMPEG_EXE or not FFPROBE_EXE:
+    if platform.system() == "Windows":
+        FFMPEG_EXE = FFMPEG_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
+        FFPROBE_EXE = FFPROBE_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffprobe.exe"
+    else:
+        FFMPEG_EXE = FFMPEG_EXE or "/usr/bin/ffmpeg"
+        FFPROBE_EXE = FFPROBE_EXE or "/usr/bin/ffprobe"
 
 AudioSegment.converter = FFMPEG_EXE
 AudioSegment.ffmpeg = FFMPEG_EXE
@@ -129,7 +133,7 @@ logger.setLevel(logging.INFO)
 # ----------------------------
 # Load Whisper model once per worker
 # ----------------------------
-MODEL_NAME = "base"
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 try:
     WHISPER_MODEL = whisper.load_model(MODEL_NAME)
     logger.info(f"Loaded Whisper model: {MODEL_NAME}")
@@ -243,15 +247,17 @@ def process_video(bucket_name, filename):
     print(f"[TASK] 🎬 Video: {filename}")
     vpath, apath = None, None
     try:
-        model = whisper.load_model("base")
+        if WHISPER_MODEL is None:
+            raise RuntimeError("Whisper model not loaded on worker")
         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1]); os.close(fd)
         with minio_client.get_object(bucket_name, filename) as data:
             with open(vpath, "wb") as f: f.write(data.read())
 
         apath = tempfile.mktemp(suffix=".wav")
+        # Use ffmpeg to extract audio track
         ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000").run(quiet=True, overwrite_output=True)
 
-        result = model.transcribe(apath)
+        result = WHISPER_MODEL.transcribe(apath)
         VideoFile.objects.create(filename=filename, content=result.get("text", ""), status="completed")
         print(f"[TASK] ✅ Video processed: {filename}")
     except Exception as e:
@@ -278,6 +284,29 @@ def process_doc(bucket_name, object_name):
         elif ext == ".docx":
             doc = Document(tmp)
             text = "\n".join(p.text for p in doc.paragraphs)
+        elif ext == ".odt":
+            try:
+                from odf.opendocument import load
+                from odf import text as odf_text
+                odt_doc = load(tmp)
+                parts = []
+                for elem in odt_doc.getElementsByType(odf_text.P):
+                    parts.append(str(elem))
+                text = "\n".join(parts)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read ODT: {e}")
+        elif ext == ".epub":
+            try:
+                from ebooklib import epub
+                from bs4 import BeautifulSoup
+                book = epub.read_epub(tmp)
+                parts = []
+                for item in book.get_items_of_type(9):  # DOCUMENT
+                    soup = BeautifulSoup(item.get_content(), "html.parser")
+                    parts.append(soup.get_text(" ", strip=True))
+                text = "\n".join(parts)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read EPUB: {e}")
         else:
             with open(tmp, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
@@ -370,12 +399,23 @@ def process_ppt(bucket_name, filename):
         if ext == ".ppt":
             outdir = os.path.dirname(tmp)
             basename = os.path.splitext(os.path.basename(tmp))[0]
-            subprocess.run(
-                ["libreoffice", "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            libreoffice_bin = os.environ.get("LIBREOFFICE_BIN", "libreoffice")
+            try:
+                subprocess.run(
+                    [libreoffice_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except subprocess.CalledProcessError as e:
+                # Try fallback to 'soffice' binary
+                fallback_bin = os.environ.get("LIBREOFFICE_FALLBACK_BIN", "soffice")
+                subprocess.run(
+                    [fallback_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
             converted = os.path.join(outdir, basename + ".pptx")
             if not os.path.exists(converted):
                 raise RuntimeError("Failed to convert .ppt to .pptx. Ensure LibreOffice is installed.")
