@@ -115,3 +115,14 @@ if __name__ == "__main__":
     ]
     for f in files:
         print(f"{f}: {detect_file_type(f, debug=True)}")
+
+
+# utils.py
+import urllib.parse
+
+def normalize_filename(filename: str) -> str:
+    """
+    Fix issues like spaces, %20, + signs from MinIO event filenames.
+    Example: "How+to+Copy%20Dashboard.mp4" → "How to Copy Dashboard.mp4"
+    """
+    return urllib.parse.unquote(filename.replace("+", " "))

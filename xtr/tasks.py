@@ -17,11 +17,18 @@ from .models import (
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
 )
 from .minio_client import minio_client, list_objects
-from .utils import detect_file_type, SPREADSHEET_EXTENSIONS
+from .utils import detect_file_type, SPREADSHEET_EXTENSIONS , normalize_filename
 import gzip
 from pathlib import Path
 import py7zr
+from pymongo import MongoClient
 
+
+def get_mongo_client():
+    """
+    Create a fresh MongoClient for each task (safe for Celery workers).
+    """
+    return MongoClient("mongodb://localhost:27017")
 
 # ✅ FFMPEG & Whisper setup
 # Make ffmpeg/ffprobe paths configurable for server environments
@@ -187,58 +194,75 @@ def fix_script(text: str, detected_lang: str) -> str:
 
 
 
-@shared_task
-def process_audio(bucket_name, filename):
-    logger.info(f"[TASK] 🎧 Processing audio: {filename}")
-
-    client = get_mongo_client()
-    db = client["xtremand_qa"]
-    audio_collection = db["audio_files"]
-
-    fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
-    os.close(fd)
-
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def process_audio(self, bucket_name, filename):
+    path, client = None, None
     try:
-        # Download from MinIO
-        minio_client.fget_object(bucket_name, filename, path)
+        # Normalize filename (fix + / %20 / spaces issues)
+        filename = normalize_filename(filename)
+        logger.info(f"[TASK] 🎧 Processing audio: {filename}")
 
         if WHISPER_MODEL is None:
             raise RuntimeError("Whisper model not loaded on worker")
 
-        # Run Whisper transcription
-        result = WHISPER_MODEL.transcribe(path, task="transcribe", fp16=False)
+        # Mongo inside task
+        client = get_mongo_client()
+        db = client["xtremand_qa"]
+        audio_collection = db["audio_files"]
+
+        # Download audio file from MinIO
+        fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
+        os.close(fd)
+        minio_client.fget_object(bucket_name, filename, path)
+
+        # Transcribe with Whisper
+        result = WHISPER_MODEL.transcribe(path, task="transcribe")
         text = result.get("text", "").strip()
         detected_lang = result.get("language")
 
-        # Fix Indic script if needed
+        # Fix Indic scripts if needed
         text = fix_script(text, detected_lang)
 
-        # Save result
+        # Save result in MongoDB
         audio_collection.insert_one({
             "filename": filename,
             "content": text,
             "status": "completed",
             "meta_data": {
                 "detected_language": detected_lang,
-                "duration_sec": result.get("segments", [])[-1]["end"] if result.get("segments") else None,
             },
+            "created_at": datetime.utcnow(),
         })
 
         logger.info(f"[TASK] ✅ Audio processed: {filename}")
 
-    except Exception as e:
-        logger.error(f"[TASK] ❌ Failed audio {filename}: {e}")
-        audio_collection.insert_one({
-            "filename": filename,
-            "content": "",
-            "status": "failed",
-            "error": str(e),
-        })
+    except Exception as exc:
+        logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
+
+        if client:
+            db = client["xtremand_qa"]
+            audio_collection = db["audio_files"]
+            audio_collection.insert_one({
+                "filename": filename,
+                "content": "",
+                "status": "failed",
+                "meta_data": {"error": str(exc)},
+                "created_at": datetime.utcnow(),
+            })
+
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            logger.error(f"[TASK] Max retries reached for {filename}")
 
     finally:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             os.remove(path)
-        client.close()
+        if client:
+            client.close()
+
+
+
 
 # VIDEO PROCESSING WITH RETRIES
 
