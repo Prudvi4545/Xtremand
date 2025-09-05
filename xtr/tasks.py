@@ -11,13 +11,17 @@ from pptx import Presentation
 from pydub import AudioSegment
 from PIL import Image
 import logging
-
+import subprocess
 from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
 )
 from .minio_client import minio_client, list_objects
 from .utils import detect_file_type, SPREADSHEET_EXTENSIONS
+import gzip
+from pathlib import Path
+import py7zr
+
 
 # ✅ FFMPEG & Whisper setup
 # Make ffmpeg/ffprobe paths configurable for server environments
@@ -101,6 +105,7 @@ def auto_discover_and_process(bucket_name=None, filename=None):
 # ====================================
 # Individual processors
 # ====================================
+
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def process_image(self, bucket_name, object_name):
     print(f"[TASK] 📷 Image: {object_name}")
@@ -174,6 +179,47 @@ def fix_script(text: str, detected_lang: str) -> str:
 # ----------------------------
 # Celery task
 # ----------------------------
+
+
+# ------------------------------------
+# AUDIO  FILE PROCESSING 
+# ------------------------------------
+
+@shared_task()
+def process_yaml(bucket_name, filename):
+    print(f"[TASK] 📄 YAML: {filename}")
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        minio_client.fget_object(bucket_name, filename, tmp)
+
+        with open(tmp, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        YamlFile.objects.create(
+            filename=filename,
+            content=yaml.dump(data),
+            status="completed",
+            meta_data={"keys": list(data.keys()) if isinstance(data, dict) else None},
+        )
+        print(f"[TASK] ✅ YAML processed: {filename}")
+
+    except Exception as e:
+        YamlFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)},
+        )
+        print(f"[TASK] ❌ Failed processing {filename}: {e}")
+
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     if WHISPER_MODEL is None:
@@ -240,54 +286,76 @@ def process_audio(self, bucket_name, filename):
             if path and os.path.exists(path):
                 os.remove(path)
 
-@shared_task
-def process_video(video_id):
-    try:
-        # Fetch the VideoFile instance
-        video = VideoFile.objects.get(id=video_id)
-        s3_key = video.s3_key  # Your stored S3 object key
 
-        print(f"[TASK] 🎬 Video: {s3_key}")
+# VIDEO PROCESSING WITH RETRIES
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def process_video(self, bucket_name, filename):
+    vpath, apath = None, None
+    try:
+        logger.info(f"[TASK] 🎬 Processing video: {filename}")
 
         if WHISPER_MODEL is None:
             raise RuntimeError("Whisper model not loaded on worker")
-        
-        # Create a temporary file for the video
-        fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(s3_key)[-1])
+
+        # Download video from MinIO
+        fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
+        minio_client.fget_object(bucket_name, filename, vpath)
 
-        # Download the video from S3
-        with minio_client.get_object(bucket_name, s3_key) as data:
-            with open(vpath, "wb") as f:
-                f.write(data.read())
-
+        # Extract audio track
         apath = tempfile.mktemp(suffix=".wav")
-        # Use ffmpeg to extract audio track
-        ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000").run(quiet=True, overwrite_output=True)
+        ffmpeg.input(vpath).output(
+            apath,
+            format="wav",
+            acodec="pcm_s16le",
+            ac=1,
+            ar="16000"
+        ).run(quiet=True, overwrite_output=True)
 
         # Transcribe audio
-        result = WHISPER_MODEL.transcribe(apath)
+        result = WHISPER_MODEL.transcribe(apath, task="transcribe")
+        text = result.get("text", "").strip()
+        detected_lang = result.get("language")
 
-        # Save result in database
-        VideoFile.objects.filter(id=video_id).update(
-            content=result.get("text", ""),
-            status="completed"
+        # Fix Indic scripts if needed
+        text = fix_script(text, detected_lang)
+
+        # Accurate duration
+        segments = result.get("segments", [])
+        duration_sec = segments[-1]["end"] if segments else None
+
+        # Save in DB
+        VideoFile.objects.create(
+            filename=filename,
+            content=text,
+            status="completed",
+            meta_data={
+                "detected_language": detected_lang,
+                "duration_sec": duration_sec,
+            },
         )
-        print(f"[TASK] ✅ Video processed: {s3_key}")
 
-    except Exception as e:
-        # Handle errors and update status
-        VideoFile.objects.filter(id=video_id).update(
+        logger.info(f"[TASK] ✅ Video processed: {filename}")
+
+    except Exception as exc:
+        logger.error(f"[TASK] ❌ Failed video {filename}: {exc}")
+        VideoFile.objects.create(
+            filename=filename,
             content="",
             status="failed",
-            meta_data={"error": str(e)}
+            meta_data={"error": str(exc)},
         )
-        print(f"[TASK] ❌ Error processing video: {s3_key} - {str(e)}")
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            logger.error(f"[TASK] Max retries reached for {filename}")
+
     finally:
-        # Cleanup temporary files
         for p in [vpath, apath]:
             if p and os.path.exists(p):
-                os.remove(p)                
+                os.remove(p)
+
 
 # @shared_task
 # def process_video(bucket_name, filename):
@@ -316,7 +384,7 @@ def process_video(video_id):
 
 @shared_task
 def process_doc(bucket_name, object_name):
-    print(f"[TASK]  Document: {object_name}")
+    print(f"[TASK] 📄 Document: {object_name}")
     ext = os.path.splitext(object_name)[-1].lower()
     tmp = None
     try:
@@ -324,37 +392,38 @@ def process_doc(bucket_name, object_name):
         os.close(fd)
         minio_client.fget_object(bucket_name, object_name, tmp)
 
+        text = ""
+
         if ext == ".pdf":
             with open(tmp, "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 text = "\n".join(p.extract_text() or "" for p in reader.pages)
+
         elif ext == ".docx":
             doc = Document(tmp)
             text = "\n".join(p.text for p in doc.paragraphs)
+
         elif ext == ".odt":
-            try:
-                from odf.opendocument import load
-                from odf import text as odf_text
-                odt_doc = load(tmp)
-                parts = []
-                for elem in odt_doc.getElementsByType(odf_text.P):
-                    parts.append(str(elem))
-                text = "\n".join(parts)
-            except Exception as e:
-                raise RuntimeError(f"Failed to read ODT: {e}")
+            from odf.opendocument import load
+            from odf import text as odf_text
+            odt_doc = load(tmp)
+            parts = []
+            for elem in odt_doc.getElementsByType(odf_text.P):
+                parts.append(str(elem))
+            text = "\n".join(parts)
+
         elif ext == ".epub":
-            try:
-                from ebooklib import epub
-                from bs4 import BeautifulSoup
-                book = epub.read_epub(tmp)
-                parts = []
-                for item in book.get_items_of_type(9):  # DOCUMENT
-                    soup = BeautifulSoup(item.get_content(), "html.parser")
-                    parts.append(soup.get_text(" ", strip=True))
-                text = "\n".join(parts)
-            except Exception as e:
-                raise RuntimeError(f"Failed to read EPUB: {e}")
+            from ebooklib import epub
+            from bs4 import BeautifulSoup
+            book = epub.read_epub(tmp)
+            parts = []
+            for item in book.get_items_of_type(9):  # DOCUMENT
+                soup = BeautifulSoup(item.get_content(), "html.parser")
+                parts.append(soup.get_text(" ", strip=True))
+            text = "\n".join(parts)
+
         else:
+            # fallback for .txt or unknown
             with open(tmp, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
 
@@ -362,23 +431,23 @@ def process_doc(bucket_name, object_name):
             filename=object_name,
             content=text,
             status="completed",
-            meta_data={"ext": ext, "length": len(text)}
+            meta_data={"ext": ext, "length": len(text)},
         )
-        print(f"[TASK]  Document processed: {object_name}")
+        print(f"[TASK] ✅ Document processed: {object_name}")
+
     except Exception as e:
         DocumentFile.objects.create(
             filename=object_name,
             content="",
             status="failed",
-            meta_data={"error": str(e)}
+            meta_data={"error": str(e)},
         )
-        print(f"[TASK]  Failed processing {object_name} — {e}")
+        print(f"[TASK] ❌ Failed processing {object_name}: {e}")
+
     finally:
         if tmp and os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except PermissionError as e:
-                print(f"[TASK]  Could not delete temp file {tmp}: {e}") 
+            os.remove(tmp)
+
 
 
 @shared_task
@@ -421,14 +490,6 @@ def process_log(bucket_name, filename):
     except Exception as e:
         LogFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
-
-import os
-import tempfile
-import subprocess
-from pptx import Presentation
-from celery import shared_task
-from .models import PPTFile
-from .minio_client import minio_client
 
 
 @shared_task
@@ -569,40 +630,75 @@ def process_spreadsheet(self, bucket_name, filename):
 
 
 @shared_task
-def process_archive(bucket_name, filename):
-    tmp, extract_path = None, None
-    try:
-        ext = os.path.splitext(filename)[-1].lower()
-        fd, tmp = tempfile.mkstemp(suffix=ext); os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
-
-        extracted = []
-        if ext == ".zip":
-            with zipfile.ZipFile(tmp) as z: extracted = z.namelist()
-        else:
-            with tarfile.open(tmp, "r:*") as t: extracted = t.getnames()
-
-        ArchiveFile.objects.create(filename=filename, content="\n".join(extracted), status="completed", meta_data={"num_files": len(extracted)})
-        print(f"[TASK] ✅ Archive processed: {filename}")
-    except Exception as e:
-        ArchiveFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
-    finally:
-        if tmp and os.path.exists(tmp): os.remove(tmp)
-
-
-@shared_task
-def process_yaml(bucket_name, filename):
+def process_archive(bucket_name, object_name):
+    print(f"[TASK] ➡️ Processing archive: {object_name}")
+    ext = os.path.splitext(object_name)[-1].lower()
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".yaml"); os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
-        data = yaml.safe_load(open(tmp))
-        YamlFile.objects.create(filename=filename, content=str(data), status="completed")
-        print(f"[TASK] ✅ YAML processed: {filename}")
+        # download file
+        fd, tmp = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        minio_client.fget_object(bucket_name, object_name, tmp)
+
+        file_list = []
+
+        if ext == ".zip":
+            print("[DEBUG] Using zipfile")
+            with zipfile.ZipFile(tmp, "r") as zf:
+                file_list = zf.namelist()
+
+        elif ext == ".tar":
+            print("[DEBUG] Using tarfile")
+            with tarfile.open(tmp, "r") as tf:
+                file_list = tf.getnames()
+
+        elif ext == ".gz":
+            print("[DEBUG] Using gzip")
+            with gzip.open(tmp, "rb") as gz:
+                # GZ usually has 1 file → extract its name
+                inner_name = os.path.basename(object_name).replace(".gz", "")
+                out_tmp = tmp + "_decompressed"
+                with open(out_tmp, "wb") as out_f:
+                    out_f.write(gz.read())
+                file_list = [inner_name]
+
+        elif ext == ".7z":
+            print("[DEBUG] Using py7zr")
+            with py7zr.SevenZipFile(tmp, "r") as zf:
+                file_list = zf.getnames()
+
+        elif ext == ".rar":
+            print("[DEBUG] Using rarfile")
+            with rarfile.RarFile(tmp, "r") as rf:
+                file_list = rf.namelist()
+
+        else:
+            raise RuntimeError(f"Unsupported archive type: {ext}")
+
+        ArchiveFile.objects.create(
+            filename=object_name,
+            content="\n".join(file_list),
+            status="completed",
+            meta_data={"num_files": len(file_list)}
+        )
+        print(f"[TASK] ✅ Archive processed: {object_name} with {len(file_list)} files")
+
     except Exception as e:
-        YamlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+        ArchiveFile.objects.create(
+            filename=object_name,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)}
+        )
+        print(f"[TASK] ❌ Failed processing {object_name}: {e}")
+
     finally:
-        if tmp and os.path.exists(tmp): os.remove(tmp)
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
 
 
 # ====================================
