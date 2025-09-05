@@ -185,125 +185,86 @@ def fix_script(text: str, detected_lang: str) -> str:
 # AUDIO  FILE PROCESSING 
 # ------------------------------------
 
-@shared_task()
-def process_yaml(bucket_name, filename):
-    print(f"[TASK] 📄 YAML: {filename}")
-    tmp = None
+
+
+@shared_task
+def process_audio(bucket_name, filename):
+    logger.info(f"[TASK] 🎧 Processing audio: {filename}")
+
+    client = get_mongo_client()
+    db = client["xtremand_qa"]
+    audio_collection = db["audio_files"]
+
+    fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
+    os.close(fd)
+
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".yaml")
-        os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
+        # Download from MinIO
+        minio_client.fget_object(bucket_name, filename, path)
 
-        with open(tmp, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        if WHISPER_MODEL is None:
+            raise RuntimeError("Whisper model not loaded on worker")
 
-        YamlFile.objects.create(
-            filename=filename,
-            content=yaml.dump(data),
-            status="completed",
-            meta_data={"keys": list(data.keys()) if isinstance(data, dict) else None},
-        )
-        print(f"[TASK] ✅ YAML processed: {filename}")
-
-    except Exception as e:
-        YamlFile.objects.create(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(e)},
-        )
-        print(f"[TASK] ❌ Failed processing {filename}: {e}")
-
-    finally:
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
-
-
-
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def process_audio(self, bucket_name, filename):
-    if WHISPER_MODEL is None:
-        logger.error("Whisper model is not loaded. Task aborted.")
-        return
-
-    tmp_file, wav_file = None, None
-    try:
-        logger.info(f"[TASK] 🎧 Processing audio: {filename}")
-
-        # Download file from MinIO
-        fd, tmp_file = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
-        os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp_file)
-
-        # Convert to WAV if not already
-        if not filename.lower().endswith(".wav"):
-            wav_file = tmp_file + ".wav"
-            AudioSegment.from_file(tmp_file).export(wav_file, format="wav")
-        else:
-            wav_file = tmp_file
-
-        # Transcribe using Whisper
-        result = WHISPER_MODEL.transcribe(wav_file, task="transcribe")
+        # Run Whisper transcription
+        result = WHISPER_MODEL.transcribe(path, task="transcribe", fp16=False)
         text = result.get("text", "").strip()
         detected_lang = result.get("language")
 
-        # Fix Indic scripts if needed
+        # Fix Indic script if needed
         text = fix_script(text, detected_lang)
 
-        # Calculate accurate duration from segments
-        segments = result.get("segments", [])
-        duration_sec = segments[-1]["end"] if segments else None
-
-        # Save transcription in MongoDB
-        AudioFile.objects.create(
-            filename=filename,
-            content=text,
-            status="completed",
-            meta_data={
+        # Save result
+        audio_collection.insert_one({
+            "filename": filename,
+            "content": text,
+            "status": "completed",
+            "meta_data": {
                 "detected_language": detected_lang,
-                "duration_sec": duration_sec,
+                "duration_sec": result.get("segments", [])[-1]["end"] if result.get("segments") else None,
             },
-        )
+        })
 
         logger.info(f"[TASK] ✅ Audio processed: {filename}")
 
-    except Exception as exc:
-        logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
-        AudioFile.objects.create(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(exc)},
-        )
-        try:
-            self.retry(exc=exc)
-        except self.MaxRetriesExceededError:
-            logger.error(f"[TASK] Max retries reached for {filename}")
+    except Exception as e:
+        logger.error(f"[TASK] ❌ Failed audio {filename}: {e}")
+        audio_collection.insert_one({
+            "filename": filename,
+            "content": "",
+            "status": "failed",
+            "error": str(e),
+        })
 
     finally:
-        # Clean up temp files
-        for path in [tmp_file, wav_file]:
-            if path and os.path.exists(path):
-                os.remove(path)
-
+        if os.path.exists(path):
+            os.remove(path)
+        client.close()
 
 # VIDEO PROCESSING WITH RETRIES
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_video(self, bucket_name, filename):
     vpath, apath = None, None
+    client = None
     try:
+        # Normalize filename (fix + / %20 / spaces issues)
+        filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎬 Processing video: {filename}")
 
         if WHISPER_MODEL is None:
             raise RuntimeError("Whisper model not loaded on worker")
+
+        # Mongo inside task
+        client = get_mongo_client()
+        db = client["xtremand_qa"]
+        video_collection = db["video_files"]
 
         # Download video from MinIO
         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, vpath)
 
-        # Extract audio track
+        # Extract audio track with ffmpeg
         apath = tempfile.mktemp(suffix=".wav")
         ffmpeg.input(vpath).output(
             apath,
@@ -325,36 +286,47 @@ def process_video(self, bucket_name, filename):
         segments = result.get("segments", [])
         duration_sec = segments[-1]["end"] if segments else None
 
-        # Save in DB
-        VideoFile.objects.create(
-            filename=filename,
-            content=text,
-            status="completed",
-            meta_data={
+        # Save result in MongoDB
+        video_collection.insert_one({
+            "filename": filename,
+            "content": text,
+            "status": "completed",
+            "meta_data": {
                 "detected_language": detected_lang,
                 "duration_sec": duration_sec,
             },
-        )
+            "created_at": datetime.utcnow(),
+        })
 
         logger.info(f"[TASK] ✅ Video processed: {filename}")
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed video {filename}: {exc}")
-        VideoFile.objects.create(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(exc)},
-        )
+
+        if client:
+            db = client["xtremand_qa"]
+            video_collection = db["video_files"]
+            video_collection.insert_one({
+                "filename": filename,
+                "content": "",
+                "status": "failed",
+                "meta_data": {"error": str(exc)},
+                "created_at": datetime.utcnow(),
+            })
+
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
 
     finally:
+        # Cleanup files
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
+        if client:
+            client.close()
+
 
 
 # @shared_task
@@ -490,6 +462,39 @@ def process_log(bucket_name, filename):
     except Exception as e:
         LogFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
+
+@shared_task()
+def process_yaml(bucket_name, filename):
+    print(f"[TASK] 📄 YAML: {filename}")
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+        minio_client.fget_object(bucket_name, filename, tmp)
+
+        with open(tmp, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        YamlFile.objects.create(
+            filename=filename,
+            content=yaml.dump(data),
+            status="completed",
+            meta_data={"keys": list(data.keys()) if isinstance(data, dict) else None},
+        )
+        print(f"[TASK] ✅ YAML processed: {filename}")
+
+    except Exception as e:
+        YamlFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)},
+        )
+        print(f"[TASK] ❌ Failed processing {filename}: {e}")
+
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
 
 
 @shared_task
