@@ -1,23 +1,25 @@
 from mongoengine import *
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ------------------------
 # Audio, Video, Document Files
 # ------------------------
-class AudioFile(Document):
-    filename = StringField(max_length=255, unique=True, required=True)
-    content = StringField()
-    status = StringField(max_length=50, default='pending')
-    meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
-
-
 class VideoFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
+    meta = {
+        'collection': 'video_file'  # Custom collection name
+    }
+
+class AudioFile(Document):
+    filename = StringField(max_length=255, unique=True, required=True)
+    content = StringField()
+    status = StringField(max_length=50, default='pending')
+    meta_data = DictField()
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class DocumentFile(Document):

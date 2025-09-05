@@ -4,7 +4,7 @@ celery
 redis
 minio
 mongoengine
-djongo
+
 
 # File handling
 pydub
@@ -24,7 +24,7 @@ lxml
 python-magic
 
 # AI / Whisper
-openai-whisper
+faster-whisper
 torch
 
 # Utilities

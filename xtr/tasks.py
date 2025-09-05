@@ -1,5 +1,5 @@
 from indic_transliteration import sanscript
-import datetime
+from datetime import datetime, timezone
 from celery import shared_task
 import os, tempfile, platform, zipfile, tarfile, json, yaml
 import pandas as pd
@@ -22,6 +22,8 @@ import gzip
 from pathlib import Path
 import py7zr
 from pymongo import MongoClient
+from faster_whisper import WhisperModel
+import torch
 
 
 def get_mongo_client():
@@ -77,6 +79,7 @@ def auto_discover_and_process(bucket_name=None, filename=None):
 
     for obj in files:
         fname = obj.object_name.strip()
+        fname=normalize_filename(fname)
         ftype = detect_file_type(fname)
         print(f"[TASK] ➡️ Found: {fname} (type: {ftype})")
 
@@ -138,157 +141,106 @@ def process_image(self, bucket_name, object_name):
     finally:
         if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
 
+# ----------------------------
+# Logger
+# ----------------------------
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# ----------------------------
-# Load Whisper model once per worker
-# ----------------------------
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+# Load Faster-Whisper once
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 try:
-    WHISPER_MODEL = whisper.load_model(MODEL_NAME)
-    logger.info(f"Loaded Whisper model: {MODEL_NAME}")
+    WHISPER_MODEL = WhisperModel(
+        MODEL_SIZE,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        compute_type="float16" if torch.cuda.is_available() else "int8"
+    )
+    logger.info(f"✅ Loaded Faster-Whisper model: {MODEL_SIZE}")
 except Exception as e:
-    logger.error(f"Failed to load Whisper model: {e}")
+    logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
     WHISPER_MODEL = None
 
-# ----------------------------
-# Indic language script mapping
-# ----------------------------
-LANGUAGE_SCRIPT_MAP = {
-    "te": sanscript.TELUGU,
-    "hi": sanscript.DEVANAGARI,
-    "kn": sanscript.KANNADA,
-    "ml": sanscript.MALAYALAM,
-    "ta": sanscript.TAMIL,
-    "bn": sanscript.BENGALI,
-}
 
+# Helper function
+def transcribe_file(file_path: str):
+    if WHISPER_MODEL is None:
+        raise RuntimeError("Faster-Whisper model not loaded")
 
-def fix_script(text: str, detected_lang: str) -> str:
-    """
-    Convert text into the expected script for the detected language.
-    """
-    target_script = LANGUAGE_SCRIPT_MAP.get(detected_lang)
-    if not target_script:
-        return text  # Unknown language, skip
-
-    # Detect Devanagari chars in text for non-Hindi languages
-    if detected_lang != "hi" and any("\u0900" <= ch <= "\u097F" for ch in text):
-        try:
-            return transliterate(text, Subscript.DEVANAGARI, target_script) # type: ignore
-        except Exception:
-            return text
-    return text
-
-
-# ----------------------------
-# Celery task
-# ----------------------------
+    segments, info = WHISPER_MODEL.transcribe(file_path)
+    text = " ".join([seg.text for seg in segments]).strip()
+    logger.info(f"Processing audio with duration {info.duration:.2f}s")
+    logger.info(f"Detected language '{info.language}' with probability {info.language_probability:.2f}")
+    return text, info.language, info.duration
 
 
 # ------------------------------------
-# AUDIO  FILE PROCESSING 
+# AUDIO TASK
 # ------------------------------------
-
-
-
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
-    path, client = None, None
+    path = None
     try:
-        # Normalize filename (fix + / %20 / spaces issues)
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎧 Processing audio: {filename}")
 
-        if WHISPER_MODEL is None:
-            raise RuntimeError("Whisper model not loaded on worker")
-
-        # Mongo inside task
-        client = get_mongo_client()
-        db = client["xtremand_qa"]
-        audio_collection = db["audio_files"]
-
-        # Download audio file from MinIO
         fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, path)
 
-        # Transcribe with Whisper
-        result = WHISPER_MODEL.transcribe(path, task="transcribe")
-        text = result.get("text", "").strip()
-        detected_lang = result.get("language")
+        # Transcribe
+        text, detected_lang, duration = transcribe_file(path)
 
-        # Fix Indic scripts if needed
-        text = fix_script(text, detected_lang)
-
-        # Save result in MongoDB
-        audio_collection.insert_one({
-            "filename": filename,
-            "content": text,
-            "status": "completed",
-            "meta_data": {
+        # Save using AudioFile model
+        AudioFile(
+            filename=filename,
+            content=text,
+            status="completed",
+            meta_data={
                 "detected_language": detected_lang,
+                "duration_sec": duration,
             },
-            "created_at": datetime.utcnow(),
-        })
+            created_at=datetime.now(timezone.utc)
+        ).save()
 
         logger.info(f"[TASK] ✅ Audio processed: {filename}")
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
 
-        if client:
-            db = client["xtremand_qa"]
-            audio_collection = db["audio_files"]
-            audio_collection.insert_one({
-                "filename": filename,
-                "content": "",
-                "status": "failed",
-                "meta_data": {"error": str(exc)},
-                "created_at": datetime.utcnow(),
-            })
+        AudioFile(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(exc)},
+            created_at=datetime.now(timezone.utc)
+        ).save()
 
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
-
     finally:
         if path and os.path.exists(path):
             os.remove(path)
-        if client:
-            client.close()
 
 
-
-
-# VIDEO PROCESSING WITH RETRIES
-
+# ------------------------------------
+# VIDEO TASK
+# ------------------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_video(self, bucket_name, filename):
     vpath, apath = None, None
-    client = None
     try:
-        # Normalize filename (fix + / %20 / spaces issues)
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎬 Processing video: {filename}")
 
-        if WHISPER_MODEL is None:
-            raise RuntimeError("Whisper model not loaded on worker")
-
-        # Mongo inside task
-        client = get_mongo_client()
-        db = client["xtremand_qa"]
-        video_collection = db["video_files"]
-
-        # Download video from MinIO
+        # Download video
         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, vpath)
 
-        # Extract audio track with ffmpeg
+        # Extract audio
         apath = tempfile.mktemp(suffix=".wav")
         ffmpeg.input(vpath).output(
             apath,
@@ -298,60 +250,42 @@ def process_video(self, bucket_name, filename):
             ar="16000"
         ).run(quiet=True, overwrite_output=True)
 
-        # Transcribe audio
-        result = WHISPER_MODEL.transcribe(apath, task="transcribe")
-        text = result.get("text", "").strip()
-        detected_lang = result.get("language")
+        # Transcribe
+        text, detected_lang, duration = transcribe_file(apath)
 
-        # Fix Indic scripts if needed
-        text = fix_script(text, detected_lang)
-
-        # Accurate duration
-        segments = result.get("segments", [])
-        duration_sec = segments[-1]["end"] if segments else None
-
-        # Save result in MongoDB
-        video_collection.insert_one({
-            "filename": filename,
-            "content": text,
-            "status": "completed",
-            "meta_data": {
+        # Save using VideoFile model
+        VideoFile(
+            filename=filename,
+            content=text,
+            status="completed",
+            meta_data={
                 "detected_language": detected_lang,
-                "duration_sec": duration_sec,
+                "duration_sec": duration,
             },
-            "created_at": datetime.utcnow(),
-        })
+            created_at=datetime.now(timezone.utc)
+        ).save()
 
         logger.info(f"[TASK] ✅ Video processed: {filename}")
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed video {filename}: {exc}")
 
-        if client:
-            db = client["xtremand_qa"]
-            video_collection = db["video_files"]
-            video_collection.insert_one({
-                "filename": filename,
-                "content": "",
-                "status": "failed",
-                "meta_data": {"error": str(exc)},
-                "created_at": datetime.utcnow(),
-            })
+        VideoFile(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(exc)},
+            created_at=datetime.now(timezone.utc)
+        ).save()
 
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
-
     finally:
-        # Cleanup files
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
-        if client:
-            client.close()
-
-
 
 # @shared_task
 # def process_video(bucket_name, filename):
@@ -386,6 +320,7 @@ def process_doc(bucket_name, object_name):
     try:
         fd, tmp = tempfile.mkstemp(suffix=ext)
         os.close(fd)
+        object_name=normalize_filename(object_name)
         minio_client.fget_object(bucket_name, object_name, tmp)
 
         text = ""
