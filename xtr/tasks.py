@@ -23,7 +23,7 @@ from pymongo import MongoClient
 from faster_whisper import WhisperModel
 import torch
 from bs4 import BeautifulSoup
-
+from celery.signals import worker_process_init
 
 def get_mongo_client():
     """
@@ -113,6 +113,7 @@ def auto_discover_and_process(bucket_name=None, filename=None):
 # Logger
 # ----------------------------
 
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -148,9 +149,21 @@ except Exception as e:
     WHISPER_MODEL = None
 
 # ----------------------------
+# MongoDB connection after Celery fork
+# ----------------------------
+@worker_process_init.connect
+def init_mongo(**kwargs):
+    mongo_uri = os.environ.get("MONGO_URI")
+    db_name = os.environ.get("MONGO_DB")
+    if not mongo_uri or not db_name:
+        logger.error("[INIT] MONGO_URI or MONGO_DB not set. Cannot connect to MongoDB.")
+        raise ValueError("MONGO_URI and MONGO_DB must be set in environment variables")
+    connect(db=db_name, host=mongo_uri, alias="default")
+    logger.info(f"[INIT] MongoDB connected to {db_name} via {mongo_uri}")
+
+# ----------------------------
 # Helper: Transcribe file
 # ----------------------------
-
 def transcribe_file(file_path: str, language: str = None):
     if WHISPER_MODEL is None:
         raise RuntimeError("Faster-Whisper model not loaded")
@@ -164,7 +177,6 @@ def transcribe_file(file_path: str, language: str = None):
 # ----------------------------
 # Celery Task: Audio
 # ----------------------------
-
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     path = None
@@ -178,29 +190,36 @@ def process_audio(self, bucket_name, filename):
 
         text, detected_lang, duration = transcribe_file(path)
 
-        AudioFile(
+        doc = AudioFile(
             filename=filename,
             content=text,
             status="completed",
             meta_data={"detected_language": detected_lang, "duration_sec": duration},
             created_at=datetime.now(timezone.utc)
-        ).save()
-
-        logger.info(f"[TASK] ✅ Audio processed: {filename}")
+        )
+        doc.save()
+        logger.info(f"[TASK] ✅ AudioFile saved with ID: {doc.id}")
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
-        AudioFile(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(exc)},
-            created_at=datetime.now(timezone.utc)
-        ).save()
+        try:
+            doc = AudioFile(
+                filename=filename,
+                content="",
+                status="failed",
+                meta_data={"error": str(exc)},
+                created_at=datetime.now(timezone.utc)
+            )
+            doc.save()
+            logger.info(f"[TASK] ⚠️ Failed AudioFile logged for {filename}")
+        except Exception as e:
+            logger.error(f"[TASK] ❌ Failed saving failed audio record: {e}")
+
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
+
     finally:
         if path and os.path.exists(path):
             os.remove(path)
@@ -226,33 +245,41 @@ def process_video(self, bucket_name, filename):
 
         text, detected_lang, duration = transcribe_file(apath)
 
-        VideoFile(
+        doc = VideoFile(
             filename=filename,
             content=text,
             status="completed",
             meta_data={"detected_language": detected_lang, "duration_sec": duration},
             created_at=datetime.now(timezone.utc)
-        ).save()
-
-        logger.info(f"[TASK] ✅ Video processed: {filename}")
+        )
+        doc.save()
+        logger.info(f"[TASK] ✅ VideoFile saved with ID: {doc.id}")
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed video {filename}: {exc}")
-        VideoFile(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(exc)},
-            created_at=datetime.now(timezone.utc)
-        ).save()
+        try:
+            doc = VideoFile(
+                filename=filename,
+                content="",
+                status="failed",
+                meta_data={"error": str(exc)},
+                created_at=datetime.now(timezone.utc)
+            )
+            doc.save()
+            logger.info(f"[TASK] ⚠️ Failed VideoFile logged for {filename}")
+        except Exception as e:
+            logger.error(f"[TASK] ❌ Failed saving failed video record: {e}")
+
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
+
     finally:
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
+
 
 # ------------------------------------
 # IMAGE TASK

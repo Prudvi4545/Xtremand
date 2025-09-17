@@ -32,3 +32,4 @@ torch
 # Utilities
 indic-transliteration
 ffmpeg-python
+filetype
