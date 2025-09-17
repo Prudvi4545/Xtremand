@@ -22,7 +22,9 @@ ebooklib
 beautifulsoup4
 lxml
 python-magic
-
+rarfile
+pillow-heif 
+cairosvg
 # AI / Whisper
 faster-whisper
 torch

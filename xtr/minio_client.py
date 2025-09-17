@@ -1,91 +1,50 @@
-from minio import Minio
+# minio_client.py
 import os
+from minio import Minio
+from minio.error import S3Error
 
-# Use environment variables for MinIO credentials and host
-MINIO_HOST = os.environ.get('MINIO_HOST', '172.16.17.161:9000')
-MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY', 'Xtremand')
-MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY', 'Xtremand@321')
-MINIO_SECURE = os.environ.get('MINIO_SECURE', 'False').lower() == 'true'
+# -----------------------------
+# Check environment (local or server)
+# -----------------------------
+DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
 
+# -----------------------------
+# MinIO Config for local & server
+# -----------------------------
+if DB_ENV == "server":
+    MINIO_HOST = os.environ.get("MINIO_HOST", "172.16.17.161:9000")
+    MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "Xtremand")
+    MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "Xtremand@321")
+    MINIO_SECURE = os.environ.get("MINIO_SECURE", "False").lower() == "true"
+else:  # local
+    MINIO_HOST = os.environ.get("MINIO_HOST", "localhost:9000")
+    MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+    MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+    MINIO_SECURE = os.environ.get("MINIO_SECURE", "False").lower() == "true"
+
+# -----------------------------
+# Initialize MinIO client
+# -----------------------------
 minio_client = Minio(
     MINIO_HOST,
     access_key=MINIO_ACCESS_KEY,
     secret_key=MINIO_SECRET_KEY,
-    secure=MINIO_SECURE
+    secure=MINIO_SECURE,
 )
-print("MinIO client initialized.")
-print(minio_client)
 
-# try:
-#     # List all buckets
-#     buckets = minio_client.list_buckets()
-#     print("Available Buckets:",buckets)
-#     print()
-#     for bucket in buckets:
-#         bucket_name = bucket.name
-#         print(f"Bucket: {bucket_name}")
-        
-#         # List all objects in the current bucket
-#         objects = minio_client.list_objects(bucket_name)
-#         for obj in objects:
-#             print(f" - {obj.object_name}")
-            
-# except Exception as e:
-#     print(f"Error occurred: {e}")
-
-def list_objects(bucket_name):
-    return minio_client.list_objects(bucket_name, recursive=True)
+print(f"✅ MinIO client initialized for [{DB_ENV}] environment: {MINIO_HOST}")
 
 
-
-# new
-
-
-# from minio import Minio
-# from minio.error import S3Error
-
-# # -----------------------------
-# # MinIO connection parameters
-# # -----------------------------
-# MINIO_HOST = "172.16.17.161:9000"  # API port, not browser port
-# ACCESS_KEY = "Xtremand"
-# SECRET_KEY = "Xtremand@321"
-# SECURE = False  # True if using HTTPS
-
-# # -----------------------------
-# # Initialize MinIO client
-# # -----------------------------
-# minio_client = Minio(
-#     MINIO_HOST,
-#     access_key=ACCESS_KEY,
-#     secret_key=SECRET_KEY,
-#     secure=SECURE
-# )
-
-# print("MinIO client initialized successfully.")
-
-# # -----------------------------
-# # List all buckets
-# # -----------------------------
-# try:
-#     buckets = minio_client.list_buckets()
-#     print("Available Buckets:")
-#     for bucket in buckets:
-#         print(f" - {bucket.name}")
-# except S3Error as e:
-#     print(f"Error listing buckets: {e}")
-
-# # -----------------------------
-# # Helper function to list objects in a bucket
-# # -----------------------------
-# def list_objects(bucket_name):
-#     """
-#     List all objects in the specified bucket recursively.
-#     Returns a generator of objects.
-#     """
-#     try:
-#         objects = minio_client.list_objects(bucket_name, recursive=True)
-#         return objects
-#     except S3Error as e:
-#         print(f"Error listing objects in bucket '{bucket_name}': {e}")
-#         return []
+# -----------------------------
+# Helper function to list objects
+# -----------------------------
+def list_objects(bucket_name: str):
+    """
+    List all objects in the specified bucket recursively.
+    Returns a generator of objects.
+    """
+    try:
+        return minio_client.list_objects(bucket_name, recursive=True)
+    except S3Error as e:
+        print(f"❌ Error listing objects in bucket '{bucket_name}': {e}")
+        return []

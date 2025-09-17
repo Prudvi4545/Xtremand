@@ -93,7 +93,7 @@ class YamlFile(Document):
     content = StringField()
     status = StringField(max_length=20, default='pending')
     created_at = DateTimeField(default=datetime.utcnow, required=True)
-
+    meta_data = DictField() 
 
 # ------------------------
 # Images

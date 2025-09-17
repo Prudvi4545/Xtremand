@@ -1,7 +1,7 @@
 from indic_transliteration import sanscript
 from datetime import datetime, timezone
 from celery import shared_task
-import os, tempfile, platform, zipfile, tarfile, json, yaml
+import os, tempfile, platform, zipfile, tarfile, json, yaml, gzip,py7zr, rarfile,filetype
 import pandas as pd
 import PyPDF2
 from docx import Document
@@ -18,12 +18,11 @@ from .models import (
 )
 from .minio_client import minio_client, list_objects
 from .utils import detect_file_type, SPREADSHEET_EXTENSIONS , normalize_filename
-import gzip
 from pathlib import Path
-import py7zr
 from pymongo import MongoClient
 from faster_whisper import WhisperModel
 import torch
+from bs4 import BeautifulSoup
 
 
 def get_mongo_client():
@@ -32,26 +31,22 @@ def get_mongo_client():
     """
     return MongoClient("mongodb://localhost:27017")
 
-# ✅ FFMPEG & Whisper setup
-# Make ffmpeg/ffprobe paths configurable for server environments
-FFMPEG_EXE = os.environ.get("FFMPEG_PATH")
-FFPROBE_EXE = os.environ.get("FFPROBE_PATH")
-if not FFMPEG_EXE or not FFPROBE_EXE:
-    if platform.system() == "Windows":
-        FFMPEG_EXE = FFMPEG_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-        FFPROBE_EXE = FFPROBE_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffprobe.exe"
-    else:
-        FFMPEG_EXE = FFMPEG_EXE or "/usr/bin/ffmpeg"
-        FFPROBE_EXE = FFPROBE_EXE or "/usr/bin/ffprobe"
 
-AudioSegment.converter = FFMPEG_EXE
-AudioSegment.ffmpeg = FFMPEG_EXE
-AudioSegment.ffprobe = FFPROBE_EXE
+
+# ====================================
+# MinIO event handler
+# ====================================
+
+@shared_task
+def process_minio_file(bucket_name, object_key):
+    print(f"[TASK] 🚀 New file event: {object_key} in bucket: {bucket_name}")
+    auto_discover_and_process.delay(bucket_name, object_key)
 
 
 # ====================================
 # Master bucket scanner
 # ====================================
+
 @shared_task
 def fetch_all_buckets_and_objects():
     print("[TASK] 🚀 Fetching all buckets and their objects from MinIO...")
@@ -69,6 +64,7 @@ def fetch_all_buckets_and_objects():
 # ====================================
 # Dispatcher
 # ====================================
+
 @shared_task
 def auto_discover_and_process(bucket_name=None, filename=None):
     if not bucket_name:
@@ -112,34 +108,6 @@ def auto_discover_and_process(bucket_name=None, filename=None):
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
 
-# ====================================
-# Individual processors
-# ====================================
-
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def process_image(self, bucket_name, object_name):
-    print(f"[TASK] 📷 Image: {object_name}")
-    tmp_path = None
-    try:
-        suffix = os.path.splitext(object_name)[-1]
-        fd, tmp_path = tempfile.mkstemp(suffix=suffix); os.close(fd)
-        minio_client.fget_object(bucket_name, object_name, tmp_path)
-
-        with Image.open(tmp_path) as img:
-            ImageFile.objects.create(
-                file_name=object_name,
-                file_size=os.path.getsize(tmp_path),
-                width=img.size[0],
-                height=img.size[1],
-                format=img.format,
-                meta_data={"mode": img.mode, "info": img.info},
-            )
-        print(f"[TASK] ✅ Image processed: {object_name}")
-    except Exception as e:
-        print(f"[TASK] ❌ Error image {object_name}: {e}")
-        raise self.retry(exc=e)
-    finally:
-        if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
 
 # ----------------------------
 # Logger
@@ -148,35 +116,55 @@ def process_image(self, bucket_name, object_name):
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Load Faster-Whisper once
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
+# ----------------------------
+# FFMPEG / pydub setup
+# ----------------------------
+FFMPEG_EXE = os.environ.get("FFMPEG_PATH")
+FFPROBE_EXE = os.environ.get("FFPROBE_PATH")
+if not FFMPEG_EXE or not FFPROBE_EXE:
+    if platform.system() == "Windows":
+        FFMPEG_EXE = FFMPEG_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
+        FFPROBE_EXE = FFPROBE_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffprobe.exe"
+    else:
+        FFMPEG_EXE = FFMPEG_EXE or "/usr/bin/ffmpeg"
+        FFPROBE_EXE = FFPROBE_EXE or "/usr/bin/ffprobe"
+
+AudioSegment.converter = FFMPEG_EXE
+AudioSegment.ffmpeg = FFMPEG_EXE
+AudioSegment.ffprobe = FFPROBE_EXE
+
+# ----------------------------
+# Load Faster-Whisper
+# ----------------------------
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+
 try:
-    WHISPER_MODEL = WhisperModel(
-        MODEL_SIZE,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        compute_type="float16" if torch.cuda.is_available() else "int8"
-    )
-    logger.info(f"✅ Loaded Faster-Whisper model: {MODEL_SIZE}")
+    WHISPER_MODEL = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+    logger.info(f"✅ Loaded Faster-Whisper '{MODEL_SIZE}' on {DEVICE} ({COMPUTE_TYPE})")
 except Exception as e:
     logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
     WHISPER_MODEL = None
 
+# ----------------------------
+# Helper: Transcribe file
+# ----------------------------
 
-# Helper function
-def transcribe_file(file_path: str):
+def transcribe_file(file_path: str, language: str = None):
     if WHISPER_MODEL is None:
         raise RuntimeError("Faster-Whisper model not loaded")
-
-    segments, info = WHISPER_MODEL.transcribe(file_path)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
     text = " ".join([seg.text for seg in segments]).strip()
-    logger.info(f"Processing audio with duration {info.duration:.2f}s")
-    logger.info(f"Detected language '{info.language}' with probability {info.language_probability:.2f}")
+    logger.info(f"Processed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
     return text, info.language, info.duration
 
+# ----------------------------
+# Celery Task: Audio
+# ----------------------------
 
-# ------------------------------------
-# AUDIO TASK
-# ------------------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     path = None
@@ -188,18 +176,13 @@ def process_audio(self, bucket_name, filename):
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, path)
 
-        # Transcribe
         text, detected_lang, duration = transcribe_file(path)
 
-        # Save using AudioFile model
         AudioFile(
             filename=filename,
             content=text,
             status="completed",
-            meta_data={
-                "detected_language": detected_lang,
-                "duration_sec": duration,
-            },
+            meta_data={"detected_language": detected_lang, "duration_sec": duration},
             created_at=datetime.now(timezone.utc)
         ).save()
 
@@ -207,7 +190,6 @@ def process_audio(self, bucket_name, filename):
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
-
         AudioFile(
             filename=filename,
             content="",
@@ -215,7 +197,6 @@ def process_audio(self, bucket_name, filename):
             meta_data={"error": str(exc)},
             created_at=datetime.now(timezone.utc)
         ).save()
-
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
@@ -224,10 +205,9 @@ def process_audio(self, bucket_name, filename):
         if path and os.path.exists(path):
             os.remove(path)
 
-
-# ------------------------------------
-# VIDEO TASK
-# ------------------------------------
+# ----------------------------
+# Celery Task: Video
+# ----------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_video(self, bucket_name, filename):
     vpath, apath = None, None
@@ -235,33 +215,22 @@ def process_video(self, bucket_name, filename):
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎬 Processing video: {filename}")
 
-        # Download video
         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, vpath)
 
         # Extract audio
         apath = tempfile.mktemp(suffix=".wav")
-        ffmpeg.input(vpath).output(
-            apath,
-            format="wav",
-            acodec="pcm_s16le",
-            ac=1,
-            ar="16000"
-        ).run(quiet=True, overwrite_output=True)
+        ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000")\
+            .run(quiet=True, overwrite_output=True)
 
-        # Transcribe
         text, detected_lang, duration = transcribe_file(apath)
 
-        # Save using VideoFile model
         VideoFile(
             filename=filename,
             content=text,
             status="completed",
-            meta_data={
-                "detected_language": detected_lang,
-                "duration_sec": duration,
-            },
+            meta_data={"detected_language": detected_lang, "duration_sec": duration},
             created_at=datetime.now(timezone.utc)
         ).save()
 
@@ -269,7 +238,6 @@ def process_video(self, bucket_name, filename):
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed video {filename}: {exc}")
-
         VideoFile(
             filename=filename,
             content="",
@@ -277,7 +245,6 @@ def process_video(self, bucket_name, filename):
             meta_data={"error": str(exc)},
             created_at=datetime.now(timezone.utc)
         ).save()
-
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
@@ -287,29 +254,81 @@ def process_video(self, bucket_name, filename):
             if p and os.path.exists(p):
                 os.remove(p)
 
-# @shared_task
-# def process_video(bucket_name, filename):
-#     print(f"[TASK] 🎬 Video: {filename}")
-#     vpath, apath = None, None
-#     try:
-#         if WHISPER_MODEL is None:
-#             raise RuntimeError("Whisper model not loaded on worker")
-#         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1]); os.close(fd)
-#         with minio_client.get_object(bucket_name, filename) as data:
-#             with open(vpath, "wb") as f: f.write(data.read())
+# ------------------------------------
+# IMAGE TASK
+# ------------------------------------
 
-#         apath = tempfile.mktemp(suffix=".wav")
-#         # Use ffmpeg to extract audio track
-#         ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000").run(quiet=True, overwrite_output=True)
 
-#         result = WHISPER_MODEL.transcribe(apath)
-#         VideoFile.objects.create(filename=filename, content=result.get("text", ""), status="completed")
-#         print(f"[TASK] ✅ Video processed: {filename}")
-#     except Exception as e:
-#         VideoFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
-#     finally:
-#         for p in [vpath, apath]:
-#             if p and os.path.exists(p): os.remove(p)
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_image(self, bucket_name, object_name):
+    print(f"[TASK] 📷 Image: {object_name}")
+    tmp_path = None
+    try:
+        ext = os.path.splitext(object_name)[-1].lower()
+        fd, tmp_path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        minio_client.fget_object(bucket_name, object_name, tmp_path)
+
+        # --- Handle extension typos ---
+        typo_map = {".ppng": ".png", ".jiif": ".jfif"}
+        if ext in typo_map:
+            new_path = tmp_path.replace(ext, typo_map[ext])
+            os.rename(tmp_path, new_path)
+            tmp_path = new_path
+            ext = typo_map[ext]
+
+        # --- Enable HEIC/HEIF ---
+        if ext in [".heic", ".heif"]:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+
+        # --- Handle SVG (convert to PNG first) ---
+        if ext == ".svg":
+            import cairosvg
+            png_path = tmp_path + ".png"
+            cairosvg.svg2png(url=tmp_path, write_to=png_path)
+            tmp_path = png_path
+            ext = ".png"
+
+        # --- Open with Pillow ---
+        with Image.open(tmp_path) as img:
+            # Ensure standard mode
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+
+            # Clean metadata
+            clean_info = {}
+            for k, v in img.info.items():
+                try:
+                    clean_info[k] = float(v) if hasattr(v, "__float__") else str(v)
+                except Exception:
+                    clean_info[k] = str(v)
+
+            # --- Upsert instead of insert ---
+            ImageFile.objects(file_name=object_name).update_one(
+                set__file_size=os.path.getsize(tmp_path),
+                set__width=img.size[0],
+                set__height=img.size[1],
+                set__format=img.format,
+                set__meta_data={"mode": img.mode, "info": clean_info},
+                upsert=True  # ✅ insert if not exists, else update
+            )
+
+        print(f"[TASK] ✅ Image processed: {object_name}")
+
+    except Exception as e:
+        print(f"[TASK] ❌ Error image {object_name}: {e}")
+        raise self.retry(exc=e)
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+
+# ------------------------------------
+# DOCUMENT TASK
+# ------------------------------------
 
 
 @shared_task
@@ -381,6 +400,11 @@ def process_doc(bucket_name, object_name):
 
 
 
+# ------------------------------------
+# HTML TASK
+# ------------------------------------
+
+
 @shared_task
 def process_html(bucket_name, filename):
     try:
@@ -389,6 +413,11 @@ def process_html(bucket_name, filename):
         print(f"[TASK] ✅ HTML processed: {filename}")
     except Exception as e:
         HtmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+
+
+# ------------------------------------
+# JSON TASK
+# ------------------------------------
 
 
 @shared_task
@@ -401,6 +430,11 @@ def process_json(bucket_name, filename):
         JsonFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
 
+# ------------------------------------
+# XML TASK
+# ------------------------------------
+
+
 @shared_task
 def process_xml(bucket_name, filename):
     try:
@@ -411,6 +445,9 @@ def process_xml(bucket_name, filename):
     except Exception as e:
         XmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
+# ------------------------------------
+# LOG TASK
+# ------------------------------------
 
 @shared_task
 def process_log(bucket_name, filename):
@@ -421,28 +458,39 @@ def process_log(bucket_name, filename):
     except Exception as e:
         LogFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
+# ------------------------------------
+#  YAML TASK
+# ------------------------------------
 
-@shared_task()
-def process_yaml(bucket_name, filename):
-    print(f"[TASK] 📄 YAML: {filename}")
-    tmp = None
+@shared_task(bind=True)
+def process_yaml(self, bucket_name, filename):
+    tmp_file = None
     try:
-        fd, tmp = tempfile.mkstemp(suffix=".yaml")
-        os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
+        print(f"[TASK] 📄 YAML: {filename}")
 
-        with open(tmp, "r", encoding="utf-8") as f:
+        # Create temp file safely
+        fd, tmp_file = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
+
+        # Download from MinIO
+        minio_client.fget_object(bucket_name, filename, tmp_file)
+
+        # Read YAML safely
+        with open(tmp_file, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
+        # Save to MongoDB
         YamlFile.objects.create(
             filename=filename,
             content=yaml.dump(data),
             status="completed",
             meta_data={"keys": list(data.keys()) if isinstance(data, dict) else None},
         )
+
         print(f"[TASK] ✅ YAML processed: {filename}")
 
     except Exception as e:
+        # Save failure info
         YamlFile.objects.create(
             filename=filename,
             content="",
@@ -452,8 +500,17 @@ def process_yaml(bucket_name, filename):
         print(f"[TASK] ❌ Failed processing {filename}: {e}")
 
     finally:
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
+        # Clean up temp file
+        if tmp_file and os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception as cleanup_error:
+                print(f"[WARNING] Could not remove temp file {tmp_file}: {cleanup_error}")
+
+
+# ------------------------------------
+# PPT TASK
+# ------------------------------------
 
 
 @shared_task
@@ -525,6 +582,10 @@ def process_ppt(bucket_name, filename):
                 except Exception:
                     pass
 
+# -------------------------------------
+# SPREADSHEET TASK
+# -------------------------------------
+
 
 @shared_task(bind=True, autoretry_for=(OSError,), retry_backoff=True, max_retries=3)
 def process_spreadsheet(self, bucket_name, filename):
@@ -593,52 +654,84 @@ def process_spreadsheet(self, bucket_name, filename):
             os.remove(tmp)
 
 
+
+# ------------------------------------
+# ARCHIVE TASK
+# ------------------------------------
+
+
+
 @shared_task
 def process_archive(bucket_name, object_name):
     print(f"[TASK] ➡️ Processing archive: {object_name}")
     ext = os.path.splitext(object_name)[-1].lower()
     tmp = None
+
     try:
-        # download file
+        # Download object from MinIO
         fd, tmp = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         minio_client.fget_object(bucket_name, object_name, tmp)
 
         file_list = []
 
-        if ext == ".zip":
+        # -------- Detect real filetype --------
+        kind = filetype.guess(tmp)
+        if kind:
+            print(f"[DEBUG] Detected type: {kind.mime} ({kind.extension})")
+            real_ext = f".{kind.extension}"
+        else:
+            print("[DEBUG] Could not detect file type, falling back to extension")
+            real_ext = ext
+
+        # -------- ZIP --------
+        if real_ext == ".zip":
             print("[DEBUG] Using zipfile")
             with zipfile.ZipFile(tmp, "r") as zf:
                 file_list = zf.namelist()
 
-        elif ext == ".tar":
-            print("[DEBUG] Using tarfile")
-            with tarfile.open(tmp, "r") as tf:
+        # -------- TAR & compressed TAR --------
+        elif real_ext in (".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz"):
+            print("[DEBUG] Using tarfile (auto-detect compression)")
+            with tarfile.open(tmp, "r:*") as tf:
                 file_list = tf.getnames()
 
-        elif ext == ".gz":
-            print("[DEBUG] Using gzip")
-            with gzip.open(tmp, "rb") as gz:
-                # GZ usually has 1 file → extract its name
-                inner_name = os.path.basename(object_name).replace(".gz", "")
-                out_tmp = tmp + "_decompressed"
-                with open(out_tmp, "wb") as out_f:
-                    out_f.write(gz.read())
-                file_list = [inner_name]
+        # -------- GZ (single file, not tar.gz) --------
+        elif real_ext == ".gz":
+            print("[DEBUG] Using gzip (single file)")
+            try:
+                with gzip.open(tmp, "rb") as gz:
+                    inner_name = os.path.basename(object_name).replace(".gz", "")
+                    out_tmp = tmp + "_decompressed"
+                    with open(out_tmp, "wb") as out_f:
+                        out_f.write(gz.read())
+                    file_list = [inner_name]
+            except OSError:
+                raise RuntimeError("File has .gz extension but is not a valid gzip file")
 
-        elif ext == ".7z":
+        # -------- 7Z --------
+        elif real_ext == ".7z":
             print("[DEBUG] Using py7zr")
+            with open(tmp, "rb") as f:
+                sig = f.read(6)
+            if sig != b"7z\xbc\xaf\x27\x1c":
+                raise RuntimeError("Not a valid 7z archive (wrong header)")
             with py7zr.SevenZipFile(tmp, "r") as zf:
                 file_list = zf.getnames()
 
-        elif ext == ".rar":
+        # -------- RAR --------
+        elif real_ext == ".rar":
             print("[DEBUG] Using rarfile")
-            with rarfile.RarFile(tmp, "r") as rf:
-                file_list = rf.namelist()
+            try:
+                with rarfile.RarFile(tmp, "r") as rf:
+                    file_list = rf.namelist()
+            except rarfile.Error as e:
+                raise RuntimeError(f"Invalid RAR file (unrar not installed?): {e}")
 
         else:
-            raise RuntimeError(f"Unsupported archive type: {ext}")
+            raise RuntimeError(f"Unsupported or unrecognized archive type: {real_ext}")
 
+        # Save success
         ArchiveFile.objects.create(
             filename=object_name,
             content="\n".join(file_list),
@@ -648,6 +741,7 @@ def process_archive(bucket_name, object_name):
         print(f"[TASK] ✅ Archive processed: {object_name} with {len(file_list)} files")
 
     except Exception as e:
+        # Save failure
         ArchiveFile.objects.create(
             filename=object_name,
             content="",
@@ -664,11 +758,3 @@ def process_archive(bucket_name, object_name):
                 pass
 
 
-
-# ====================================
-# MinIO event handler
-# ====================================
-@shared_task
-def process_minio_file(bucket_name, object_key):
-    print(f"[TASK] 🚀 New file event: {object_key} in bucket: {bucket_name}")
-    auto_discover_and_process.delay(bucket_name, object_key)
