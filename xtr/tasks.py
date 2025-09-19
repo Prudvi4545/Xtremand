@@ -24,6 +24,7 @@ from faster_whisper import WhisperModel
 import torch
 from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
+from mongoengine import connect
 
 def get_mongo_client():
     """
