@@ -149,35 +149,36 @@ except Exception as e:
     logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
     WHISPER_MODEL = None
 
-# ----------------------------
-# MongoDB connection after Celery fork
-# ----------------------------
-@worker_process_init.connect
-def init_mongo(**kwargs):
-    mongo_uri = os.environ.get("MONGO_URI")
-    db_name = os.environ.get("MONGO_DB")
-    if not mongo_uri or not db_name:
-        logger.error("[INIT] MONGO_URI or MONGO_DB not set. Cannot connect to MongoDB.")
-        raise ValueError("MONGO_URI and MONGO_DB must be set in environment variables")
-    connect(db=db_name, host=mongo_uri, alias="default")
-    logger.info(f"[INIT] MongoDB connected to {db_name} via {mongo_uri}")
+# # ----------------------------
+# # MongoDB connection after Celery fork
+# # ----------------------------
+# @worker_process_init.connect
+# def init_mongo(**kwargs):
+#     mongo_uri = os.environ.get("MONGO_URI")
+#     db_name = os.environ.get("MONGO_DB")
+#     if not mongo_uri or not db_name:
+#         logger.error("[INIT] MONGO_URI or MONGO_DB not set. Cannot connect to MongoDB.")
+#         raise ValueError("MONGO_URI and MONGO_DB must be set in environment variables")
+#     connect(db=db_name, host=mongo_uri, alias="default")
+#     logger.info(f"[INIT] MongoDB connected to {db_name} via {mongo_uri}")
 
-# ----------------------------
-# Helper: Transcribe file
-# ----------------------------
-def transcribe_file(file_path: str, language: str = None):
-    if WHISPER_MODEL is None:
-        raise RuntimeError("Faster-Whisper model not loaded")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-    segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
-    text = " ".join([seg.text for seg in segments]).strip()
-    logger.info(f"Processed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
-    return text, info.language, info.duration
+# # ----------------------------
+# # Helper: Transcribe file
+# # ----------------------------
+# def transcribe_file(file_path: str, language: str = None):
+#     if WHISPER_MODEL is None:
+#         raise RuntimeError("Faster-Whisper model not loaded")
+#     if not os.path.exists(file_path):
+#         raise FileNotFoundError(f"File not found: {file_path}")
+#     segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
+#     text = " ".join([seg.text for seg in segments]).strip()
+#     logger.info(f"Processed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
+#     return text, info.language, info.duration
 
 # ----------------------------
 # Celery Task: Audio
 # ----------------------------
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     path = None
