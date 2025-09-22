@@ -109,27 +109,14 @@ def auto_discover_and_process(bucket_name=None, filename=None):
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
 
-
-# ----------------------------
-# Logger
-# ----------------------------
-
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ----------------------------
 # FFMPEG / pydub setup
 # ----------------------------
-FFMPEG_EXE = os.environ.get("FFMPEG_PATH")
-FFPROBE_EXE = os.environ.get("FFPROBE_PATH")
-if not FFMPEG_EXE or not FFPROBE_EXE:
-    if platform.system() == "Windows":
-        FFMPEG_EXE = FFMPEG_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-        FFPROBE_EXE = FFPROBE_EXE or r"C:\ffmpeg-7.1.1-essentials_build\bin\ffprobe.exe"
-    else:
-        FFMPEG_EXE = FFMPEG_EXE or "/usr/bin/ffmpeg"
-        FFPROBE_EXE = FFPROBE_EXE or "/usr/bin/ffprobe"
+FFMPEG_EXE = os.environ.get("FFMPEG_PATH") or "/usr/bin/ffmpeg"
+FFPROBE_EXE = os.environ.get("FFPROBE_PATH") or "/usr/bin/ffprobe"
 
 AudioSegment.converter = FFMPEG_EXE
 AudioSegment.ffmpeg = FFMPEG_EXE
@@ -138,7 +125,7 @@ AudioSegment.ffprobe = FFPROBE_EXE
 # ----------------------------
 # Load Faster-Whisper
 # ----------------------------
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")  # tiny/base for CPU
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
 
@@ -149,24 +136,24 @@ except Exception as e:
     logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
     WHISPER_MODEL = None
 
-
 # ----------------------------
-# Helper: Transcribe file
+# Helper: Transcribe file with progress
 # ----------------------------
 def transcribe_file(file_path: str, language: str = None):
     if WHISPER_MODEL is None:
         raise RuntimeError("Faster-Whisper model not loaded")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-    segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
+
+    logger.info(f"🔊 Starting transcription for {file_path}")
+    segments, info = WHISPER_MODEL.transcribe(file_path, language=language, verbose=True)
     text = " ".join([seg.text for seg in segments]).strip()
-    logger.info(f"Processed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
+    logger.info(f"✅ Transcription completed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
     return text, info.language, info.duration
 
 # ----------------------------
-# Celery Task: Audio
+# Celery Task: Audio with progress
 # ----------------------------
-
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     path = None
@@ -177,6 +164,9 @@ def process_audio(self, bucket_name, filename):
         fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, path)
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Downloaded audio file not found at {path}")
 
         text, detected_lang, duration = transcribe_file(path)
 
@@ -201,21 +191,18 @@ def process_audio(self, bucket_name, filename):
                 created_at=datetime.now(timezone.utc)
             )
             doc.save()
-            logger.info(f"[TASK] ⚠️ Failed AudioFile logged for {filename}")
         except Exception as e:
             logger.error(f"[TASK] ❌ Failed saving failed audio record: {e}")
-
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
-
     finally:
         if path and os.path.exists(path):
             os.remove(path)
 
 # ----------------------------
-# Celery Task: Video
+# Celery Task: Video with progress
 # ----------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_video(self, bucket_name, filename):
@@ -224,15 +211,32 @@ def process_video(self, bucket_name, filename):
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎬 Processing video: {filename}")
 
+        # Download video
         fd, vpath = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, vpath)
 
-        # Extract audio
-        apath = tempfile.mktemp(suffix=".wav")
-        ffmpeg.input(vpath).output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000")\
-            .run(quiet=True, overwrite_output=True)
+        if not os.path.exists(vpath):
+            raise FileNotFoundError(f"Downloaded video file not found at {vpath}")
 
+        # Extract audio with progress
+        fd, apath = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        logger.info(f"🎵 Extracting audio from {vpath} to {apath}")
+
+        (
+            ffmpeg
+            .input(vpath)
+            .output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000")
+            .global_args('-progress', 'pipe:1', '-nostats')
+            .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+        )
+        logger.info(f"✅ Audio extraction completed: {apath}")
+
+        if not os.path.exists(apath):
+            raise FileNotFoundError(f"Extracted audio file not found at {apath}")
+
+        # Transcribe
         text, detected_lang, duration = transcribe_file(apath)
 
         doc = VideoFile(
@@ -256,10 +260,8 @@ def process_video(self, bucket_name, filename):
                 created_at=datetime.now(timezone.utc)
             )
             doc.save()
-            logger.info(f"[TASK] ⚠️ Failed VideoFile logged for {filename}")
         except Exception as e:
             logger.error(f"[TASK] ❌ Failed saving failed video record: {e}")
-
         try:
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
@@ -269,7 +271,6 @@ def process_video(self, bucket_name, filename):
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
-
 
 # ------------------------------------
 # IMAGE TASK
