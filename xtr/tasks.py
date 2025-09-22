@@ -137,7 +137,7 @@ except Exception as e:
     WHISPER_MODEL = None
 
 # ----------------------------
-# Helper: Transcribe file with progress
+# Helper: Transcribe file with per-segment logging
 # ----------------------------
 def transcribe_file(file_path: str, language: str = None):
     if WHISPER_MODEL is None:
@@ -146,13 +146,18 @@ def transcribe_file(file_path: str, language: str = None):
         raise FileNotFoundError(f"File not found: {file_path}")
 
     logger.info(f"🔊 Starting transcription for {file_path}")
-    segments, info = WHISPER_MODEL.transcribe(file_path, language=language, verbose=True)
+    segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
+
+    # Log each segment
+    for i, seg in enumerate(segments, start=1):
+        logger.info(f"Segment {i}/{len(segments)}: {seg.text.strip()}")
+
     text = " ".join([seg.text for seg in segments]).strip()
     logger.info(f"✅ Transcription completed: {file_path} | Duration: {info.duration:.2f}s | Language: {info.language}")
     return text, info.language, info.duration
 
 # ----------------------------
-# Celery Task: Audio with progress
+# Celery Task: Audio
 # ----------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
@@ -202,7 +207,7 @@ def process_audio(self, bucket_name, filename):
             os.remove(path)
 
 # ----------------------------
-# Celery Task: Video with progress
+# Celery Task: Video
 # ----------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_video(self, bucket_name, filename):
@@ -219,7 +224,7 @@ def process_video(self, bucket_name, filename):
         if not os.path.exists(vpath):
             raise FileNotFoundError(f"Downloaded video file not found at {vpath}")
 
-        # Extract audio with progress
+        # Extract audio
         fd, apath = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
         logger.info(f"🎵 Extracting audio from {vpath} to {apath}")
@@ -228,7 +233,6 @@ def process_video(self, bucket_name, filename):
             ffmpeg
             .input(vpath)
             .output(apath, format="wav", acodec="pcm_s16le", ac=1, ar="16000")
-            .global_args('-progress', 'pipe:1', '-nostats')
             .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
         )
         logger.info(f"✅ Audio extraction completed: {apath}")
@@ -236,7 +240,7 @@ def process_video(self, bucket_name, filename):
         if not os.path.exists(apath):
             raise FileNotFoundError(f"Extracted audio file not found at {apath}")
 
-        # Transcribe
+        # Transcribe audio
         text, detected_lang, duration = transcribe_file(apath)
 
         doc = VideoFile(
@@ -271,7 +275,6 @@ def process_video(self, bucket_name, filename):
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
-
 # ------------------------------------
 # IMAGE TASK
 # ------------------------------------
