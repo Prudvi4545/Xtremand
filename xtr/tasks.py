@@ -85,7 +85,7 @@ def auto_discover_and_process(bucket_name=None, filename=None):
             process_audio.delay(bucket_name, fname)
         elif ftype == "video" and not VideoFile.objects(filename=fname).first():
             process_video.delay(bucket_name, fname)
-        elif ftype == "image" and not ImageFile.objects(file_name=fname).first():
+        elif ftype == "image" and not ImageFile.objects(filename=fname).first():
             process_image.delay(bucket_name, fname)
         elif ftype == "document" and not DocumentFile.objects(filename=fname).first():
             process_doc.delay(bucket_name, fname)
@@ -147,7 +147,7 @@ def transcribe_file(file_path: str, language: str = None):
 
     logger.info(f"🔊 Starting transcription for {file_path}")
     segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
-
+    segments = list(segments)
     # Log each segment
     for i, seg in enumerate(segments, start=1):
         logger.info(f"Segment {i}/{len(segments)}: {seg.text.strip()}")
