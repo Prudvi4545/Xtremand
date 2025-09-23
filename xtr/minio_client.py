@@ -12,7 +12,7 @@ DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
 # MinIO Config for local & server
 # -----------------------------
 if DB_ENV == "server":
-    MINIO_HOST = os.environ.get("MINIO_HOST", "172.16.17.161:9000")
+    MINIO_HOST = os.environ.get("MINIO_HOST", "154.210.235.101:9000")
     MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "Xtremand")
     MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "Xtremand@321")
     MINIO_SECURE = os.environ.get("MINIO_SECURE", "False").lower() == "true"

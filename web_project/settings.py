@@ -43,7 +43,7 @@ except Exception:
 if DB_ENV == 'server':
     mongoengine.connect(
         db=os.environ.get('MONGO_DB', 'xtremand_qa'),
-        host=os.environ.get('MONGO_HOST', 'mongodb://172.16.17.161:27017'),
+        host=os.environ.get('MONGO_HOST', 'mongodb://154.210.235.101:27017'),
         username=os.environ.get('MONGO_USER', 'Xtremand'),
         password=os.environ.get('MONGO_PASS', 'Xtremand@321'),
         authentication_source='admin',
