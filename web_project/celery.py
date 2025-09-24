@@ -23,6 +23,10 @@ def debug_task(self):
 # MongoDB connection config
 # -----------------------------
 def _mongo_config_from_env():
+    """
+    Return MongoDB connection config depending on environment.
+    Uses DJANGO_DB_ENV = "local" or "server".
+    """
     DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
 
     if DB_ENV == "server":
@@ -31,16 +35,14 @@ def _mongo_config_from_env():
             "db": os.environ.get("MONGO_DB", "xtremand_qa"),
             "username": os.environ.get("MONGO_USER", "Xtremand"),
             "password": os.environ.get("MONGO_PASS", "Xtremand@321"),
-            # Change this if your users are created in target DB
             "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
         }
-    else:
+    else:  # local dev environment
         return {
             "host": os.environ.get("MONGO_HOST", "mongodb://localhost:27017"),
             "db": os.environ.get("MONGO_DB", "xtremand_qa"),
             "username": os.environ.get("MONGO_USER", "admin"),
             "password": os.environ.get("MONGO_PASS", "StrongAdminPassword123"),
-            # Change this if your users are created in target DB
             "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
         }
 
@@ -54,7 +56,7 @@ logger = app.log.get_default_logger()
 def celery_worker_init(**kwargs):
     """Reconnect Mongo safely inside each Celery worker process."""
     try:
-        get_connection(alias="default")  # check if already connected
+        get_connection(alias="default")  # if already connected
         mongoengine.disconnect(alias="default")
     except Exception:
         pass
@@ -68,7 +70,7 @@ def celery_worker_init(**kwargs):
         authentication_source=cfg["auth_src"],
         alias="default",
     )
-    logger.info("✅ MongoEngine connected in Celery worker process")
+    logger.info("✅ MongoEngine connected in Celery worker process (env=%s)", os.environ.get("DJANGO_DB_ENV", "local"))
 
 
 @worker_process_shutdown.connect
