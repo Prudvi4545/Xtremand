@@ -2,8 +2,11 @@ import os
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
 import mongoengine
+from mongoengine.connection import get_connection
 
-# Set the default Django settings module
+# -----------------------------
+# Django settings
+# -----------------------------
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "web_project.settings")
 
 # Create Celery app
@@ -17,16 +20,19 @@ def debug_task(self):
 
 
 # -----------------------------
-# Mongo reconnect logic (fixes "MongoClient opened before fork")
+# MongoDB connection config
 # -----------------------------
 def _mongo_config_from_env():
     DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
+
     if DB_ENV == "server":
         return {
             "host": os.environ.get("MONGO_HOST", "mongodb://154.210.235.101:27017"),
             "db": os.environ.get("MONGO_DB", "xtremand_qa"),
             "username": os.environ.get("MONGO_USER", "Xtremand"),
             "password": os.environ.get("MONGO_PASS", "Xtremand@321"),
+            # Change this if your users are created in target DB
+            "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
         }
     else:
         return {
@@ -34,12 +40,21 @@ def _mongo_config_from_env():
             "db": os.environ.get("MONGO_DB", "xtremand_qa"),
             "username": os.environ.get("MONGO_USER", "admin"),
             "password": os.environ.get("MONGO_PASS", "StrongAdminPassword123"),
+            # Change this if your users are created in target DB
+            "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
         }
+
+
+# -----------------------------
+# Mongo reconnect logic
+# -----------------------------
+logger = app.log.get_default_logger()
 
 @worker_process_init.connect
 def celery_worker_init(**kwargs):
     """Reconnect Mongo safely inside each Celery worker process."""
     try:
+        get_connection(alias="default")  # check if already connected
         mongoengine.disconnect(alias="default")
     except Exception:
         pass
@@ -50,15 +65,17 @@ def celery_worker_init(**kwargs):
         host=cfg["host"],
         username=cfg["username"],
         password=cfg["password"],
-        authentication_source="admin",
+        authentication_source=cfg["auth_src"],
         alias="default",
     )
-    print("✅ MongoEngine connected in Celery worker process")
+    logger.info("✅ MongoEngine connected in Celery worker process")
+
 
 @worker_process_shutdown.connect
 def celery_worker_shutdown(**kwargs):
+    """Disconnect Mongo cleanly when Celery worker stops."""
     try:
         mongoengine.disconnect(alias="default")
-        print("🛑 MongoEngine disconnected from Celery worker process")
+        logger.warning("🛑 MongoEngine disconnected from Celery worker process")
     except Exception:
         pass
