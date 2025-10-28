@@ -1,7 +1,7 @@
 import os
 from pptx import Presentation
 from xtr.minio_client import minio_client 
-
+from minio.error import S3Error
 
 # ✅ AUDIO
 AUDIO_EXTENSIONS = frozenset({
