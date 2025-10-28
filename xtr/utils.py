@@ -1,5 +1,7 @@
 import os
 from pptx import Presentation
+import boto3
+from django.conf import settings
 
 # ✅ AUDIO
 AUDIO_EXTENSIONS = frozenset({
@@ -126,3 +128,20 @@ def normalize_filename(filename: str) -> str:
     Example: "How+to+Copy%20Dashboard.mp4" → "How to Copy Dashboard.mp4"
     """
     return urllib.parse.unquote(filename.replace("+", " "))
+
+
+
+
+
+def move_file_to_archive(source_bucket, object_key, archive_bucket):
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=settings.MINIO_ENDPOINT,
+        aws_access_key_id=settings.MINIO_ACCESS_KEY,
+        aws_secret_access_key=settings.MINIO_SECRET_KEY,
+    )
+    copy_source = {'Bucket': source_bucket, 'Key': object_key}
+    # Copy the file to the archive bucket
+    s3_client.copy(copy_source, archive_bucket, object_key)
+    # Delete the original file from "processing"
+    s3_client.delete_object(Bucket=source_bucket, Key=object_key)

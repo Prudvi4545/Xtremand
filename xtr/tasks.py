@@ -25,6 +25,8 @@ import torch
 from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
+from bs4 import BeautifulSoup
+from .utils import move_file_to_archive
 
 def get_mongo_client():
     """
@@ -33,27 +35,22 @@ def get_mongo_client():
     return MongoClient("mongodb://localhost:27017")
 
 
-
-# ====================================
-# MinIO event handler
-# ====================================
+###########
 
 @shared_task
 def process_minio_file(bucket_name, object_key):
     print(f"[TASK] 🚀 New file event: {object_key} in bucket: {bucket_name}")
     auto_discover_and_process.delay(bucket_name, object_key)
 
-
-# ====================================
-# Master bucket scanner
-# ====================================
-
 @shared_task
 def fetch_all_buckets_and_objects():
     print("[TASK] 🚀 Fetching all buckets and their objects from MinIO...")
+    skip_bucket = "archive"  # bucket you want to skip
     try:
         for bucket in minio_client.list_buckets():
             bucket_name = bucket.name
+            if bucket_name == skip_bucket:
+                continue  # Skip this bucket!
             print(f"[TASK] 📂 Bucket: {bucket_name}")
             for obj in list_objects(bucket_name):
                 filename = obj.object_name
@@ -61,10 +58,6 @@ def fetch_all_buckets_and_objects():
     except Exception as e:
         print(f"[TASK] ❌ Error fetching buckets/objects: {e}")
 
-
-# ====================================
-# Dispatcher
-# ====================================
 
 @shared_task
 def auto_discover_and_process(bucket_name=None, filename=None):
@@ -76,37 +69,58 @@ def auto_discover_and_process(bucket_name=None, filename=None):
 
     for obj in files:
         fname = obj.object_name.strip()
-        fname=normalize_filename(fname)
+        fname = normalize_filename(fname)
         ftype = detect_file_type(fname)
         print(f"[TASK] ➡️ Found: {fname} (type: {ftype})")
 
-        # Dispatch
+        processed = False
+
+        # Dispatch by file type, update processed = True if actually processed
         if ftype == "audio" and not AudioFile.objects(filename=fname).first():
             process_audio.delay(bucket_name, fname)
+            processed = True
         elif ftype == "video" and not VideoFile.objects(filename=fname).first():
             process_video.delay(bucket_name, fname)
+            processed = True
         elif ftype == "image" and not ImageFile.objects(filename=fname).first():
             process_image.delay(bucket_name, fname)
+            processed = True
         elif ftype == "document" and not DocumentFile.objects(filename=fname).first():
             process_doc.delay(bucket_name, fname)
+            processed = True
         elif ftype == "presentation" and not PPTFile.objects(filename=fname).first():
             process_ppt.delay(bucket_name, fname)
+            processed = True
         elif ftype == "spreadsheet" and not SpreadsheetFile.objects(filename=fname).first():
             process_spreadsheet.delay(bucket_name, fname)
+            processed = True
         elif ftype == "html" and not HtmlFile.objects(filename=fname).first():
             process_html.delay(bucket_name, fname)
+            processed = True
         elif ftype == "json" and not JsonFile.objects(filename=fname).first():
             process_json.delay(bucket_name, fname)
+            processed = True
         elif ftype == "xml" and not XmlFile.objects(filename=fname).first():
             process_xml.delay(bucket_name, fname)
+            processed = True
         elif ftype == "log" and not LogFile.objects(filename=fname).first():
             process_log.delay(bucket_name, fname)
+            processed = True
         elif ftype == "archive" and not ArchiveFile.objects(filename=fname).first():
             process_archive.delay(bucket_name, fname)
+            processed = True
         elif ftype == "yaml" and not YamlFile.objects(filename=fname).first():
             process_yaml.delay(bucket_name, fname)
+            processed = True
         else:
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
+
+        # Move to archive if in "processing" bucket and processed:
+        if processed and bucket_name == "processing":
+            archive_bucket = "archive"
+            move_file_to_archive(bucket_name, fname, archive_bucket)
+
+######
 
 
 logger = logging.getLogger(__name__)
@@ -426,15 +440,41 @@ def process_doc(bucket_name, object_name):
 # ------------------------------------
 
 
+
 @shared_task
 def process_html(bucket_name, filename):
     try:
+        # Fetch HTML from MinIO
         data = minio_client.get_object(bucket_name, filename).read().decode()
-        HtmlFile.objects.create(filename=filename, content=data, status="completed")
-        print(f"[TASK] ✅ HTML processed: {filename}")
-    except Exception as e:
-        HtmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
 
+        # Parse HTML bookmarks
+        soup = BeautifulSoup(data, "html.parser")
+        bookmarks = []
+
+        for a_tag in soup.find_all('a'):
+            bookmarks.append({
+                "name": a_tag.get_text(),
+                "url": a_tag.get('href')
+            })
+
+        # Convert to human-readable string (or JSON if you want)
+        human_readable = "\n".join([f"{b['name']}: {b['url']}" for b in bookmarks])
+
+        # Save in database
+        HtmlFile.objects.create(
+            filename=filename,
+            content=human_readable,
+            status="completed"
+        )
+        print(f"[TASK] ✅ HTML processed and converted: {filename}")
+
+    except Exception as e:
+        HtmlFile.objects.create(
+            filename=filename,
+            content="",
+            status="failed",
+            meta_data={"error": str(e)}
+        )
 
 # ------------------------------------
 # JSON TASK
