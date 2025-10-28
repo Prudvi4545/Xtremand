@@ -1,7 +1,7 @@
 import os
 from pptx import Presentation
-import boto3
-from django.conf import settings
+from xtr.minio_client import minio_client 
+
 
 # ✅ AUDIO
 AUDIO_EXTENSIONS = frozenset({
@@ -134,14 +134,22 @@ def normalize_filename(filename: str) -> str:
 
 
 def move_file_to_archive(source_bucket, object_key, archive_bucket):
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=settings.MINIO_ENDPOINT,
-        aws_access_key_id=settings.MINIO_ACCESS_KEY,
-        aws_secret_access_key=settings.MINIO_SECRET_KEY,
-    )
-    copy_source = {'Bucket': source_bucket, 'Key': object_key}
-    # Copy the file to the archive bucket
-    s3_client.copy(copy_source, archive_bucket, object_key)
-    # Delete the original file from "processing"
-    s3_client.delete_object(Bucket=source_bucket, Key=object_key)
+    """
+    Moves a file from one bucket to another (e.g., processing → archive).
+    Uses the MinIO Python SDK client defined in minio_client.py.
+    """
+    try:
+        # 1️⃣ Copy the object from source → archive
+        minio_client.copy_object(
+            archive_bucket,
+            object_key,
+            f"/{source_bucket}/{object_key}"
+        )
+        print(f"✅ Copied '{object_key}' from '{source_bucket}' to '{archive_bucket}'")
+
+        # 2️⃣ Delete the original object from the source bucket
+        minio_client.remove_object(source_bucket, object_key)
+        print(f"🗑️ Deleted '{object_key}' from '{source_bucket}'")
+
+    except S3Error as e:
+        print(f"❌ Error moving '{object_key}' from '{source_bucket}' to '{archive_bucket}': {e}")

@@ -33,4 +33,3 @@ torch
 indic-transliteration
 ffmpeg-python
 filetype
-boto3
