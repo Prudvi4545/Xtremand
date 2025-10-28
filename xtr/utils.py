@@ -1,7 +1,9 @@
 import os
 from pptx import Presentation
-from xtr.minio_client import minio_client 
+
 from minio.error import S3Error
+from minio.commonconfig import CopySource
+from xtr.minio_client import minio_client
 
 # ✅ AUDIO
 AUDIO_EXTENSIONS = frozenset({
@@ -133,21 +135,22 @@ def normalize_filename(filename: str) -> str:
 
 
 
+
+
 def move_file_to_archive(source_bucket, object_key, archive_bucket):
     """
     Moves a file from one bucket to another (e.g., processing → archive).
-    Uses the MinIO Python SDK client defined in minio_client.py.
+    Uses MinIO Python SDK.
     """
     try:
-        # 1️⃣ Copy the object from source → archive
-        minio_client.copy_object(
-            archive_bucket,
-            object_key,
-            f"/{source_bucket}/{object_key}"
-        )
+        # 1️⃣ Create CopySource object (required by MinIO SDK)
+        source = CopySource(source_bucket, object_key)
+
+        # 2️⃣ Copy the object from source → archive
+        minio_client.copy_object(archive_bucket, object_key, source)
         print(f"✅ Copied '{object_key}' from '{source_bucket}' to '{archive_bucket}'")
 
-        # 2️⃣ Delete the original object from the source bucket
+        # 3️⃣ Delete the original object from the source bucket
         minio_client.remove_object(source_bucket, object_key)
         print(f"🗑️ Deleted '{object_key}' from '{source_bucket}'")
 
