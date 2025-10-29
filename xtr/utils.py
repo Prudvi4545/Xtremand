@@ -133,24 +133,50 @@ def normalize_filename(filename: str) -> str:
 
 
 
+# def move_file_to_archive(source_bucket, object_key, archive_bucket):
+#     """
+#     Moves a file from one bucket to another (e.g., processing → archive).
+#     Uses MinIO Python SDK.
+#     """
+#     try:
+#         # 1️⃣ Create CopySource object (required by MinIO SDK)
+#         source = CopySource(source_bucket, object_key)
+
+#         # 2️⃣ Copy the object from source → archive
+#         minio_client.copy_object(archive_bucket, object_key, source)
+#         print(f"✅ Copied '{object_key}' from '{source_bucket}' to '{archive_bucket}'")
+
+#         # 3️⃣ Delete the original object from the source bucket
+#         minio_client.remove_object(source_bucket, object_key)
+#         print(f"🗑️ Deleted '{object_key}' from '{source_bucket}'")
+
+#     except S3Error as e:
+#         print(f"❌ Error moving '{object_key}' from '{source_bucket}' to '{archive_bucket}': {e}")
 
 
+from minio import Minio
+from minio.commonconfig import CopySource
+from minio.error import S3Error
 
-
-def move_file_to_archive(source_bucket, object_key, archive_bucket):
+def move_file_to_archive(minio_client, source_bucket, object_key, archive_bucket, status):
     """
-    Moves a file from one bucket to another (e.g., processing → archive).
-    Uses MinIO Python SDK.
+    Moves a file from one bucket to another only if status == 'completed'.
+    Otherwise, it keeps the file in the source bucket.
     """
     try:
-        # 1️⃣ Create CopySource object (required by MinIO SDK)
+        # ✅ Step 1: Check status before proceeding
+        if status.lower() != "completed":
+            print(f"⚠️ Skipping move: '{object_key}' not moved because status = '{status}'")
+            return
+
+        # ✅ Step 2: Create CopySource (required by MinIO SDK)
         source = CopySource(source_bucket, object_key)
 
-        # 2️⃣ Copy the object from source → archive
+        # ✅ Step 3: Copy file to archive bucket
         minio_client.copy_object(archive_bucket, object_key, source)
         print(f"✅ Copied '{object_key}' from '{source_bucket}' to '{archive_bucket}'")
 
-        # 3️⃣ Delete the original object from the source bucket
+        # ✅ Step 4: Delete from processing bucket
         minio_client.remove_object(source_bucket, object_key)
         print(f"🗑️ Deleted '{object_key}' from '{source_bucket}'")
 
