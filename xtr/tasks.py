@@ -115,17 +115,7 @@ def auto_discover_and_process(bucket_name=None, filename=None):
         else:
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
-        # Move to archive if in "processing" bucket and processed:
-                # ✅ Move to archive only if processed successfully
-        if bucket_name == "processing":
-            archive_bucket = "archive"
-            status = "completed" if processed else "failed"
-
-            if status == "completed":
-                move_file_to_archive(minio_client, bucket_name, fname, archive_bucket, status)
-            else:
-                print(f"[TASK] ⚠️ Skipping archive move for '{fname}' (status: {status})")
-
+    
 
 ######
 
@@ -183,10 +173,12 @@ def transcribe_file(file_path: str, language: str = None):
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
     path = None
+    status = "failed"  # Default to failed until success confirmed
     try:
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎧 Processing audio: {filename}")
 
+        # 1️⃣ Download file from MinIO
         fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
         os.close(fd)
         minio_client.fget_object(bucket_name, filename, path)
@@ -194,8 +186,10 @@ def process_audio(self, bucket_name, filename):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Downloaded audio file not found at {path}")
 
+        # 2️⃣ Transcribe and analyze
         text, detected_lang, duration = transcribe_file(path)
 
+        # 3️⃣ Save to MongoDB
         doc = AudioFile(
             filename=filename,
             content=text,
@@ -205,6 +199,9 @@ def process_audio(self, bucket_name, filename):
         )
         doc.save()
         logger.info(f"[TASK] ✅ AudioFile saved with ID: {doc.id}")
+
+        # ✅ Mark as completed
+        status = "completed"
 
     except Exception as exc:
         logger.error(f"[TASK] ❌ Failed audio {filename}: {exc}")
@@ -223,9 +220,21 @@ def process_audio(self, bucket_name, filename):
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {filename}")
+
     finally:
+        # ✅ 4️⃣ Clean up temp file
         if path and os.path.exists(path):
             os.remove(path)
+
+        # ✅ 5️⃣ Move file to archive ONLY if processing succeeded
+        if bucket_name == "processing" and status == "completed":
+            try:
+                from xtr.utils import move_file_to_archive  # adjust import if needed
+                archive_bucket = "archive"
+                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}' (status: {status})")
+            except Exception as e:
+                logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ----------------------------
 # Celery Task: Video
