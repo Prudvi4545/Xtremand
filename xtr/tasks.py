@@ -27,6 +27,7 @@ from celery.signals import worker_process_init
 from mongoengine import connect
 from bs4 import BeautifulSoup
 from .utils import move_file_to_archive
+from xtr.utils import extract_ppt_text
 
 def get_mongo_client():
     """
@@ -115,7 +116,6 @@ def auto_discover_and_process(bucket_name=None, filename=None):
         else:
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
-    
 
 ######
 
@@ -305,6 +305,15 @@ def process_video(self, bucket_name, filename):
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
+            if bucket_name == "processing":
+                try:
+                    from xtr.utils import move_file_to_archive  # adjust import if needed
+                    archive_bucket = "archive"
+                    move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+                    logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+                except Exception as e:
+                    logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
+
 # ------------------------------------
 # IMAGE TASK
 # ------------------------------------
@@ -449,7 +458,14 @@ def process_doc(bucket_name, object_name):
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
 
-
+        if bucket_name == "processing":
+            try:
+                from xtr.utils import move_file_to_archive  # adjust import if needed
+                archive_bucket = "archive"
+                move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status="completed")
+                print(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
+            except Exception as e:
+                print(f"[TASK] ⚠️ Could not move '{object_name}' to archive: {e}")
 
 # ------------------------------------
 # HTML TASK
@@ -491,6 +507,14 @@ def process_html(bucket_name, filename):
             status="failed",
             meta_data={"error": str(e)}
         )
+    if bucket_name == "processing":
+        try:
+            from xtr.utils import move_file_to_archive  # adjust import if needed
+            archive_bucket = "archive"
+            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        except Exception as e:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # JSON TASK
@@ -505,7 +529,14 @@ def process_json(bucket_name, filename):
         print(f"[TASK] ✅ JSON processed: {filename}")
     except Exception as e:
         JsonFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
-
+    if bucket_name == "processing":
+        try:
+            from xtr.utils import move_file_to_archive  # adjust import if needed
+            archive_bucket = "archive"
+            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        except Exception as e:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # XML TASK
@@ -521,6 +552,14 @@ def process_xml(bucket_name, filename):
         print(f"[TASK] ✅ XML processed: {filename}")
     except Exception as e:
         XmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+    if bucket_name == "processing":
+        try:
+            from xtr.utils import move_file_to_archive  # adjust import if needed
+            archive_bucket = "archive"
+            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        except Exception as e:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # LOG TASK
@@ -534,6 +573,14 @@ def process_log(bucket_name, filename):
         print(f"[TASK] ✅ Log processed: {filename}")
     except Exception as e:
         LogFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
+    if bucket_name == "processing": 
+        try:
+            from xtr.utils import move_file_to_archive  # adjust import if needed
+            archive_bucket = "archive"
+            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        except Exception as e:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 #  YAML TASK
@@ -584,80 +631,170 @@ def process_yaml(self, bucket_name, filename):
             except Exception as cleanup_error:
                 print(f"[WARNING] Could not remove temp file {tmp_file}: {cleanup_error}")
 
-
+        if bucket_name == "processing":
+            try:
+                from xtr.utils import move_file_to_archive  # adjust import if needed
+                archive_bucket = "archive"
+                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            except Exception as e:
+                print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
+                
 # ------------------------------------
 # PPT TASK
 # ------------------------------------
 
+logger = logging.getLogger(__name__)
 
-@shared_task
-def process_ppt(bucket_name, filename):
-    tmp, converted = None, None
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def process_ppt(self, bucket_name, filename):
+    """
+    Task: Process PPT/PPTX files from MinIO 'processing' bucket.
+    Extracts text content and moves completed files to 'archive' bucket.
+    """
+    path = None
+    status = "failed"  # default status, will change to completed later
+
     try:
-        ext = os.path.splitext(filename)[-1].lower()
+        filename = normalize_filename(filename)
+        logger.info(f"[TASK] 📊 Processing PPT file: {filename}")
+
+        # Temporary local file
+        fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
+        os.close(fd)
 
         # Download file from MinIO
-        fd, tmp = tempfile.mkstemp(suffix=ext)
-        os.close(fd)
-        minio_client.fget_object(bucket_name, filename, tmp)
+        minio_client.fget_object(bucket_name, filename, path)
 
-        # Handle .ppt (convert to .pptx)
-        if ext == ".ppt":
-            outdir = os.path.dirname(tmp)
-            basename = os.path.splitext(os.path.basename(tmp))[0]
-            libreoffice_bin = os.environ.get("LIBREOFFICE_BIN", "libreoffice")
-            try:
-                subprocess.run(
-                    [libreoffice_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except subprocess.CalledProcessError as e:
-                # Try fallback to 'soffice' binary
-                fallback_bin = os.environ.get("LIBREOFFICE_FALLBACK_BIN", "soffice")
-                subprocess.run(
-                    [fallback_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            converted = os.path.join(outdir, basename + ".pptx")
-            if not os.path.exists(converted):
-                raise RuntimeError("Failed to convert .ppt to .pptx. Ensure LibreOffice is installed.")
-            tmp = converted  # switch to converted file
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Downloaded file not found: {path}")
 
-        # Read presentation
-        prs = Presentation(tmp)
-        text = "\n".join(
-            [sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text")]
-        )
+        # Extract PPT text and slide count
+        extracted_text, slide_count = extract_ppt_text(path)
 
-        # Save result in DB
-        PPTFile.objects.create(
+        # Save document info to MongoDB
+        doc = PPTFile(
             filename=filename,
-            content=text,
+            content=extracted_text,
             status="completed",
-            meta_data={"slides": len(prs.slides)},
+            meta_data={"slides": slide_count},
+            created_at=datetime.now(timezone.utc)
         )
-        print(f"[TASK] ✅ PPT processed: {filename}")
+        doc.save()
+        status = "completed"
+        logger.info(f"[TASK] ✅ PPTFile saved successfully: {doc.id}")
 
-    except Exception as e:
-        PPTFile.objects.create(
-            filename=filename,
-            content="",
-            status="failed",
-            meta_data={"error": str(e)},
-        )
-        print(f"[TASK] ❌ Failed PPT {filename}: {e}")
+    except Exception as exc:
+        logger.error(f"[TASK] ❌ Failed to process {filename}: {exc}")
+        try:
+            doc = PPTFile(
+                filename=filename,
+                content="",
+                status="failed",
+                meta_data={"error": str(exc)},
+                created_at=datetime.now(timezone.utc)
+            )
+            doc.save()
+        except Exception as e:
+            logger.error(f"[TASK] ❌ Failed saving failed PPT record: {e}")
+
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            logger.error(f"[TASK] Max retries reached for {filename}")
 
     finally:
-        for f in [tmp, converted]:
-            if f and os.path.exists(f):
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
+        # ✅ Move to archive only if status == "completed"
+        if bucket_name == "processing" and status == "completed":
+            try:
+                archive_bucket = "archive"
+                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' → '{archive_bucket}'")
+            except Exception as e:
+                logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
+
+        # 🧹 Clean up temporary file
+        if path and os.path.exists(path):
+            os.remove(path)
+            logger.info(f"[TASK] 🧹 Cleaned up temp file: {path}")
+
+# @shared_task
+# def process_ppt(bucket_name, filename):
+#     tmp, converted = None, None
+#     try:
+#         ext = os.path.splitext(filename)[-1].lower()
+
+#         # Download file from MinIO
+#         fd, tmp = tempfile.mkstemp(suffix=ext)
+#         os.close(fd)
+#         minio_client.fget_object(bucket_name, filename, tmp)
+
+#         # Handle .ppt (convert to .pptx)
+#         if ext == ".ppt":
+#             outdir = os.path.dirname(tmp)
+#             basename = os.path.splitext(os.path.basename(tmp))[0]
+#             libreoffice_bin = os.environ.get("LIBREOFFICE_BIN", "libreoffice")
+#             try:
+#                 subprocess.run(
+#                     [libreoffice_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
+#                     check=True,
+#                     stdout=subprocess.PIPE,
+#                     stderr=subprocess.PIPE,
+#                 )
+#             except subprocess.CalledProcessError as e:
+#                 # Try fallback to 'soffice' binary
+#                 fallback_bin = os.environ.get("LIBREOFFICE_FALLBACK_BIN", "soffice")
+#                 subprocess.run(
+#                     [fallback_bin, "--headless", "--convert-to", "pptx", "--outdir", outdir, tmp],
+#                     check=True,
+#                     stdout=subprocess.PIPE,
+#                     stderr=subprocess.PIPE,
+#                 )
+#             converted = os.path.join(outdir, basename + ".pptx")
+#             if not os.path.exists(converted):
+#                 raise RuntimeError("Failed to convert .ppt to .pptx. Ensure LibreOffice is installed.")
+#             tmp = converted  # switch to converted file
+
+#         # Read presentation
+#         prs = Presentation(tmp)
+#         text = "\n".join(
+#             [sh.text for sl in prs.slides for sh in sl.shapes if hasattr(sh, "text")]
+#         )
+
+#         # Save result in DB
+#         PPTFile.objects.create(
+#             filename=filename,
+#             content=text,
+#             status="completed",
+#             meta_data={"slides": len(prs.slides)},
+#         )
+#         print(f"[TASK] ✅ PPT processed: {filename}")
+
+#     except Exception as e:
+#         PPTFile.objects.create(
+#             filename=filename,
+#             content="",
+#             status="failed",
+#             meta_data={"error": str(e)},
+#         )
+#         print(f"[TASK] ❌ Failed PPT {filename}: {e}")
+
+#     finally:
+#         for f in [tmp, converted]:
+#             if f and os.path.exists(f):
+#                 try:
+#                     os.remove(f)
+#                 except Exception:
+#                     pass
+#             if bucket_name == "processing":
+#                 try:
+#                     from xtr.utils import move_file_to_archive  # adjust import if needed
+#                     archive_bucket = "archive"
+#                     move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+#                     print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+#                 except Exception as e:
+#                     print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # -------------------------------------
 # SPREADSHEET TASK
@@ -730,7 +867,14 @@ def process_spreadsheet(self, bucket_name, filename):
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
 
-
+        if bucket_name == "processing":
+            try:
+                from xtr.utils import move_file_to_archive  # adjust import if needed
+                archive_bucket = "archive"
+                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            except Exception as e:
+                print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # ARCHIVE TASK
