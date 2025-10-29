@@ -116,9 +116,16 @@ def auto_discover_and_process(bucket_name=None, filename=None):
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
         # Move to archive if in "processing" bucket and processed:
-        if processed and bucket_name == "processing":
+                # ✅ Move to archive only if processed successfully
+        if bucket_name == "processing":
             archive_bucket = "archive"
-            move_file_to_archive(bucket_name, fname, archive_bucket)
+            status = "completed" if processed else "failed"
+
+            if status == "completed":
+                move_file_to_archive(minio_client, bucket_name, fname, archive_bucket, status)
+            else:
+                print(f"[TASK] ⚠️ Skipping archive move for '{fname}' (status: {status})")
+
 
 ######
 
