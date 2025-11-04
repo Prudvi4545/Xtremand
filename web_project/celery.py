@@ -31,9 +31,9 @@ def _mongo_config_from_env():
 
     if DB_ENV == "server":
         return {
-            "host": os.environ.get("MONGO_HOST", "mongodb://154.210.235.101:27017"),
-            "db": os.environ.get("MONGO_DB", "xtremand_qa"),
-            "username": os.environ.get("MONGO_USER", "Xtremand"),
+            "host":  "mongodb://154.210.235.101:27017",
+            "db": "MONGO_DB", "xtremand_qa"
+            "username":  "Xtremand",
             "password": os.environ.get("MONGO_PASS", "Xtremand@321"),
             "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
         }

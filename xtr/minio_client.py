@@ -6,21 +6,22 @@ from minio.error import S3Error
 # -----------------------------
 # Check environment (local or server)
 # -----------------------------
-DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
+DB_ENV = os.getenv("DJANGO_DB_ENV", "local")
+print(f"🔍 MinIO Client initializing for [{DB_ENV}] environment")
 
-# -----------------------------
+# -----------------------------s
 # MinIO Config for local & server
 # -----------------------------
 if DB_ENV == "server":
-    MINIO_HOST = os.environ.get("MINIO_HOST", "154.210.235.101:9000")
-    MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "Xtremand")
-    MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "Xtremand@321")
-    MINIO_SECURE = os.environ.get("MINIO_SECURE", "False").lower() == "true"
+    MINIO_HOST = "154.210.235.101:9000"
+    MINIO_ACCESS_KEY =  "Xtremand"
+    MINIO_SECRET_KEY =  "Xtremand@321"
+    MINIO_SECURE =  "False".lower() == "true"
 else:  # local
-    MINIO_HOST = os.environ.get("MINIO_HOST", "localhost:9000")
-    MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-    MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-    MINIO_SECURE = os.environ.get("MINIO_SECURE", "False").lower() == "true"
+    MINIO_HOST =  "localhost:9000"
+    MINIO_ACCESS_KEY =  "minioadmin"
+    MINIO_SECRET_KEY = "minioadmin"
+    MINIO_SECURE =  "False".lower() == "true"
 
 # -----------------------------
 # Initialize MinIO client

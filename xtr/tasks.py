@@ -126,8 +126,8 @@ logger.setLevel(logging.INFO)
 # ----------------------------
 # FFMPEG / pydub setup
 # ----------------------------
-FFMPEG_EXE = os.environ.get("FFMPEG_PATH") or "/usr/bin/ffmpeg"
-FFPROBE_EXE = os.environ.get("FFPROBE_PATH") or "/usr/bin/ffprobe"
+FFMPEG_EXE = os.getenv("FFMPEG_PATH") or "/usr/bin/ffmpeg"
+FFPROBE_EXE = os.getenv("FFPROBE_PATH") or "/usr/bin/ffprobe"
 
 AudioSegment.converter = FFMPEG_EXE
 AudioSegment.ffmpeg = FFMPEG_EXE
@@ -136,7 +136,7 @@ AudioSegment.ffprobe = FFPROBE_EXE
 # ----------------------------
 # Load Faster-Whisper
 # ----------------------------
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")  # tiny/base for CPU
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")  # tiny/base for CPU
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
 
@@ -150,6 +150,7 @@ except Exception as e:
 # ----------------------------
 # Helper: Transcribe file with per-segment logging
 # ----------------------------
+
 def transcribe_file(file_path: str, language: str = None):
     if WHISPER_MODEL is None:
         raise RuntimeError("Faster-Whisper model not loaded")
@@ -180,7 +181,9 @@ def process_audio(self, bucket_name, filename):
 
         # 1️⃣ Download file from MinIO
         fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
+
         os.close(fd)
+
         minio_client.fget_object(bucket_name, filename, path)
 
         if not os.path.exists(path):
