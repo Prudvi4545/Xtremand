@@ -34,7 +34,9 @@ INSTALLED_APPS = [
 # ===============================
 # MongoEngine Configuration
 # ===============================
-DB_ENV = os.environ.get('DJANGO_DB_ENV', 'local')
+DB_ENV = 'local'  # Default to local; override in production settings
+# DB_ENV = 'server'
+
 try:
     mongoengine.disconnect(alias="default")
 except Exception:
