@@ -3,7 +3,10 @@ from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
 import mongoengine
 from mongoengine.connection import get_connection
+from web_project import settings
 
+
+DB_ENV = settings.DB_ENV
 # -----------------------------
 # Django settings
 # -----------------------------
@@ -27,23 +30,22 @@ def _mongo_config_from_env():
     Return MongoDB connection config depending on environment.
     Uses DJANGO_DB_ENV = "local" or "server".
     """
-    DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
 
     if DB_ENV == "server":
         return {
-            "host": os.environ.get("MONGO_HOST", "mongodb://154.210.235.101:27017"),
-            "db": os.environ.get("MONGO_DB", "xtremand_qa"),
-            "username": os.environ.get("MONGO_USER", "Xtremand"),
-            "password": os.environ.get("MONGO_PASS", "Xtremand@321"),
-            "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
+            "host":  "mongodb://154.210.235.101:27017",
+            "db": "MONGO_DB", "xtremand_qa"
+            "username":  "Xtremand",
+            "password": "Xtremand@321",
+            "auth_src": "admin",
         }
     else:  # local dev environment
         return {
-            "host": os.environ.get("MONGO_HOST", "mongodb://localhost:27017"),
-            "db": os.environ.get("MONGO_DB", "xtremand_qa"),
-            "username": os.environ.get("MONGO_USER", "admin"),
-            "password": os.environ.get("MONGO_PASS", "StrongAdminPassword123"),
-            "auth_src": os.environ.get("MONGO_AUTH_SRC", "admin"),
+            "host": "mongodb://localhost:27017",
+            "db": "xtremand_qa",
+            "username": "admin",
+            "password": "StrongAdminPassword123",
+            "auth_src": "admin",
         }
 
 
@@ -70,7 +72,7 @@ def celery_worker_init(**kwargs):
         authentication_source=cfg["auth_src"],
         alias="default",
     )
-    logger.info("✅ MongoEngine connected in Celery worker process (env=%s)", os.environ.get("DJANGO_DB_ENV", "local"))
+    logger.info("✅ MongoEngine connected in Celery worker process (env=%s)", DB_ENV)
 
 
 @worker_process_shutdown.connect

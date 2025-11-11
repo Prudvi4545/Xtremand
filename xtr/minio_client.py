@@ -15,7 +15,41 @@ from typing import Iterable
 from minio import Minio
 from minio.error import S3Error
 
+<<<<<<< HEAD
 logger = logging.getLogger(__name__)
+=======
+# -----------------------------
+# Check environment (local or server)
+# -----------------------------
+DB_ENV = os.getenv("DJANGO_DB_ENV", "local")
+print(f"🔍 MinIO Client initializing for [{DB_ENV}] environment")
+
+# -----------------------------s
+# MinIO Config for local & server
+# -----------------------------
+if DB_ENV == "server":
+    MINIO_HOST = "154.210.235.101:9000"
+    MINIO_ACCESS_KEY =  "Xtremand"
+    MINIO_SECRET_KEY =  "Xtremand@321"
+    MINIO_SECURE =  "False".lower() == "true"
+else:  # local
+    MINIO_HOST =  "localhost:9000"
+    MINIO_ACCESS_KEY =  "minioadmin"
+    MINIO_SECRET_KEY = "minioadmin"
+    MINIO_SECURE =  "False".lower() == "true"
+
+# -----------------------------
+# Initialize MinIO client
+# -----------------------------
+minio_client = Minio(
+    MINIO_HOST,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=MINIO_SECURE,
+)
+
+print(f"✅ MinIO client initialized for [{DB_ENV}] environment: {MINIO_HOST}")
+>>>>>>> 350cc8fe7d60821c52954d497a54d00310bf1ebe
 
 
 def _read_settings_fallback():

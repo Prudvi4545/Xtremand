@@ -34,7 +34,9 @@ INSTALLED_APPS = [
 # ===============================
 # MongoEngine Configuration
 # ===============================
-DB_ENV = os.environ.get('DJANGO_DB_ENV', 'local')
+DB_ENV = 'local'  # Default to local; override in production settings
+# DB_ENV = 'server'
+
 try:
     mongoengine.disconnect(alias="default")
 except Exception:
@@ -42,19 +44,19 @@ except Exception:
 
 if DB_ENV == 'server':
     mongoengine.connect(
-        db=os.environ.get('MONGO_DB', 'xtremand_qa'),
-        host=os.environ.get('MONGO_HOST', 'mongodb://154.210.235.101:27017'),
-        username=os.environ.get('MONGO_USER', 'Xtremand'),
-        password=os.environ.get('MONGO_PASS', 'Xtremand@321'),
+        db='xtremand_qa',
+        host= 'mongodb://154.210.235.101:27017',
+        username= 'Xtremand',
+        password= 'Xtremand@321',
         authentication_source='admin',
         alias="default"
     )
 else:
     mongoengine.connect(
-        db=os.environ.get('MONGO_DB', 'xtremand_qa'),
-        host=os.environ.get('MONGO_HOST', 'mongodb://localhost:27017'),
-        username=os.environ.get('MONGO_USER', 'admin'),
-        password=os.environ.get('MONGO_PASS', 'StrongAdminPassword123'),
+        db='xtremand_qa',
+        host='mongodb://localhost:27017',
+        username='admin',
+        password='StrongAdminPassword123',
         authentication_source='admin',
         alias="default"
     )
