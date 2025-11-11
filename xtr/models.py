@@ -1,5 +1,6 @@
 from mongoengine import *
 from datetime import datetime, timezone
+from mongoengine import Document, StringField, IntField, DictField, DateTimeField
 
 # ------------------------
 # Audio, Video, Document Files
@@ -98,8 +99,11 @@ class YamlFile(Document):
 # ------------------------
 # Images
 # ------------------------
+
+
+
 class ImageFile(Document):
-    file_name = StringField(max_length=255, unique=True, required=True)
+    filename = StringField(max_length=255, unique=True, required=True)
     file_path = StringField(max_length=1024)
     file_size = IntField()
     width = IntField()
@@ -107,6 +111,22 @@ class ImageFile(Document):
     format = StringField(max_length=50)
     meta_data = DictField()
     created_at = DateTimeField(default=datetime.utcnow, required=True)
+    # ✅ NEW:
+    updated_at = DateTimeField(default=datetime.utcnow)
+    status = StringField(max_length=50, default="completed")
 
     def __str__(self):
-        return self.file_name
+        return self.filename
+
+    # ✅ OPTIONAL convenience (used in task)
+    def mark_completed(self):
+        self.status = "completed"
+        self.updated_at = datetime.utcnow()
+        self.save()
+
+    def mark_failed(self, error_message: str):
+        self.status = "failed"
+        self.meta_data = {"error": error_message}
+        self.updated_at = datetime.utcnow()
+        self.save()
+

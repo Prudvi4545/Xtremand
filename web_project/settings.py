@@ -59,6 +59,29 @@ else:
         alias="default"
     )
 
+    # ===============================
+    # MinIO Configuration (centralized)
+    # Reads from environment but makes values available via Django settings
+    # ===============================
+    DJANGO_DB_ENV = DB_ENV  # keep backwards-compatible name
+
+    # Basic MinIO config: use different defaults for local vs server
+    if DB_ENV == 'server':
+        MINIO_HOST = os.environ.get('MINIO_HOST', '')
+        MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY', '')
+        MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY', '')
+        MINIO_SECURE = os.environ.get('MINIO_SECURE', 'False').lower() == 'true'
+    else:
+        # Local defaults: developer-friendly defaults for local MinIO installs
+        MINIO_HOST = os.environ.get('MINIO_HOST', 'localhost:9000')
+        MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY', 'minioadmin')
+        MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY', 'minioadmin')
+        MINIO_SECURE = os.environ.get('MINIO_SECURE', 'False').lower() == 'true'
+
+    # Optional: archive/processing buckets names can be customized
+    MINIO_PROCESSING_BUCKET = os.environ.get('MINIO_PROCESSING_BUCKET', 'processing')
+    MINIO_ARCHIVE_BUCKET = os.environ.get('MINIO_ARCHIVE_BUCKET', 'archive')
+
 # ===============================
 # Django + Celery Config
 # ===============================
