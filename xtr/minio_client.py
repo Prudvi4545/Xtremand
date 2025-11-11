@@ -15,9 +15,7 @@ from typing import Iterable
 from minio import Minio
 from minio.error import S3Error
 
-<<<<<<< HEAD
 logger = logging.getLogger(__name__)
-=======
 # -----------------------------
 # Check environment (local or server)
 # -----------------------------
@@ -49,7 +47,6 @@ minio_client = Minio(
 )
 
 print(f"✅ MinIO client initialized for [{DB_ENV}] environment: {MINIO_HOST}")
->>>>>>> 350cc8fe7d60821c52954d497a54d00310bf1ebe
 
 
 def _read_settings_fallback():
