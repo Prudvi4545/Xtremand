@@ -5,6 +5,7 @@ from celery.signals import worker_process_init, worker_process_shutdown
 import mongoengine
 from mongoengine.connection import get_connection
 
+
 # --- Boot Django settings first ---
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "web_project.settings")
 

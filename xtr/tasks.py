@@ -27,11 +27,6 @@ from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
 
-def get_mongo_client():
-    """
-    Create a fresh MongoClient for each task (safe for Celery workers).
-    """
-    return MongoClient("mongodb://localhost:27017")
 
 
 ###########

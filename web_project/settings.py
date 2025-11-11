@@ -17,6 +17,10 @@ WSGI_APPLICATION = 'web_project.wsgi.application'
 # ===============================
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-insecure-key')
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+# Environment marker used across the project to switch local vs server configs
+# e.g. set DJANGO_DB_ENV=server on the host to enable production behaviour
+DB_ENV = os.environ.get("DJANGO_DB_ENV", "server")
+
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
 # ===============================
