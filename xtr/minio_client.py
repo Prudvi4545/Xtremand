@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 # Check environment (local or server)
 # -----------------------------
-DB_ENV = os.getenv("DJANGO_DB_ENV", "server")
+DB_ENV = os.getenv("DJANGO_DB_ENV", "local")
 print(f"🔍 MinIO Client initializing for [{DB_ENV}] environment")
 
 # -----------------------------s

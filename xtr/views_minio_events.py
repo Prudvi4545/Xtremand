@@ -3,13 +3,6 @@ from django.http import JsonResponse
 import json
 from .tasks import process_minio_file
 
-def minio_event_webhook(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
-        print("Webhook received:", data)   # <--- This will show up in console
-        return JsonResponse({"status": "success"})
-    return JsonResponse({"error": "invalid method"}, status=405)
-
 # @csrf_exempt
 # def minio_event_webhook(request):
 #     if request.method == "POST":

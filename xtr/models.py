@@ -28,7 +28,7 @@ class DocumentFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class HtmlFile(Document):
@@ -36,7 +36,7 @@ class HtmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class JsonFile(Document):
@@ -44,7 +44,7 @@ class JsonFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class XmlFile(Document):
@@ -52,7 +52,7 @@ class XmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class LogFile(Document):
@@ -60,7 +60,7 @@ class LogFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class PPTFile(Document):
@@ -68,7 +68,7 @@ class PPTFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     meta = {
         'collection': 'ppt_file'  # Custom collection name
     }
@@ -78,7 +78,7 @@ class SpreadsheetFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class ArchiveFile(Document):
@@ -86,14 +86,14 @@ class ArchiveFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class YamlFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     content = StringField()
-    status = StringField(max_length=20, default='pending')
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    status = StringField(max_length=50, default='pending')
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     meta_data = DictField() 
 
 # ------------------------
@@ -110,9 +110,9 @@ class ImageFile(Document):
     height = IntField()
     format = StringField(max_length=50)
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     # ✅ NEW:
-    updated_at = DateTimeField(default=datetime.utcnow)
+    updated_at = DateTimeField(default=lambda: datetime.now(timezone.utc))
     status = StringField(max_length=50, default="completed")
 
     def __str__(self):
