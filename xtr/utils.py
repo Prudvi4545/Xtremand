@@ -1,9 +1,12 @@
 import os
+import logging
 from pptx import Presentation
 
 from minio.error import S3Error
 from minio.commonconfig import CopySource
-from xtr.minio_client import minio_client
+from xtr.minio_client import get_minio_client
+
+logger = logging.getLogger(__name__)
 
 # ✅ AUDIO
 AUDIO_EXTENSIONS = frozenset({
@@ -141,20 +144,20 @@ def move_file_to_archive(minio_client, source_bucket, object_key, archive_bucket
     Moves a file from processing → archive only when status == 'completed'.
     """
     if status != "completed":
-        print(f"⏭️ Skipping move: {object_key} not completed (status={status})")
-        return
+        logger.debug("Skipping move: %s not completed (status=%s)", object_key, status)
+        return False
 
     try:
-        # 1️⃣ Create CopySource
+        client = get_minio_client()
         source = CopySource(source_bucket, object_key)
-
-        # 2️⃣ Copy object to archive
-        minio_client.copy_object(archive_bucket, object_key, source)
-        print(f"✅ Copied '{object_key}' from '{source_bucket}' to '{archive_bucket}'")
-
-        # 3️⃣ Delete original
-        minio_client.remove_object(source_bucket, object_key)
-        print(f"🗑️ Deleted '{object_key}' from '{source_bucket}'")
-
+        client.copy_object(archive_bucket, object_key, source)
+        logger.info("Copied '%s' from '%s' to '%s'", object_key, source_bucket, archive_bucket)
+        client.remove_object(source_bucket, object_key)
+        logger.info("Deleted '%s' from '%s'", object_key, source_bucket)
+        return True
     except S3Error as e:
-        print(f"❌ Error moving '{object_key}' to archive: {e}")
+        logger.error("S3Error moving '%s' to '%s': %s", object_key, archive_bucket, e)
+        return False
+    except Exception as e:
+        logger.exception("Unexpected error moving '%s' to '%s': %s", object_key, archive_bucket, e)
+        return False

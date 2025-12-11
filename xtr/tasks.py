@@ -16,8 +16,8 @@ from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
 )
-from .minio_client import minio_client, list_objects
-from .utils import detect_file_type, SPREADSHEET_EXTENSIONS , normalize_filename
+from .minio_client import minio_client, list_objects, get_minio_client
+from .utils import detect_file_type, SPREADSHEET_EXTENSIONS, normalize_filename, move_file_to_archive
 from pathlib import Path
 from pymongo import MongoClient
 from faster_whisper import WhisperModel
@@ -25,15 +25,8 @@ import torch
 from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
-from bs4 import BeautifulSoup
-from .utils import move_file_to_archive
 from xtr.utils import extract_ppt_text
 
-def get_mongo_client():
-    """
-    Create a fresh MongoClient for each task (safe for Celery workers).
-    """
-    return MongoClient("mongodb://localhost:27017")
 
 
 ###########
@@ -173,13 +166,21 @@ def transcribe_file(file_path: str, language: str = None):
 # ----------------------------
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_audio(self, bucket_name, filename):
+    """
+    Process audio files from MinIO:
+    1. Download from MinIO
+    2. Transcribe using Faster-Whisper
+    3. Save metadata to MongoDB
+    4. Move to archive if successful
+    """
     path = None
-    status = "failed"  # Default to failed until success confirmed
+    status = "failed"
+    
     try:
         filename = normalize_filename(filename)
         logger.info(f"[TASK] 🎧 Processing audio: {filename}")
 
-        # 1️⃣ Download file from MinIO
+        # Download file from MinIO
         fd, path = tempfile.mkstemp(suffix=os.path.splitext(filename)[-1])
 
         os.close(fd)
@@ -189,10 +190,10 @@ def process_audio(self, bucket_name, filename):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Downloaded audio file not found at {path}")
 
-        # 2️⃣ Transcribe and analyze
+        # Transcribe
         text, detected_lang, duration = transcribe_file(path)
 
-        # 3️⃣ Save to MongoDB
+        # Save to MongoDB
         doc = AudioFile(
             filename=filename,
             content=text,
@@ -202,8 +203,6 @@ def process_audio(self, bucket_name, filename):
         )
         doc.save()
         logger.info(f"[TASK] ✅ AudioFile saved with ID: {doc.id}")
-
-        # ✅ Mark as completed
         status = "completed"
 
     except Exception as exc:
@@ -225,17 +224,19 @@ def process_audio(self, bucket_name, filename):
             logger.error(f"[TASK] Max retries reached for {filename}")
 
     finally:
-        # ✅ 4️⃣ Clean up temp file
+        # Clean up temp file
         if path and os.path.exists(path):
             os.remove(path)
 
-        # ✅ 5️⃣ Move file to archive ONLY if processing succeeded
+        # Move to archive ONLY if completed
         if bucket_name == "processing" and status == "completed":
             try:
-                from xtr.utils import move_file_to_archive  # adjust import if needed
                 archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
-                logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}' (status: {status})")
+                success = move_file_to_archive(bucket_name, filename, archive_bucket, status="completed")
+                if success:
+                    logger.info(f"[TASK] 📦 Moved '{filename}' to archive")
+                else:
+                    logger.warning(f"[TASK] ⏭️ Failed to move '{filename}' to archive")
             except Exception as e:
                 logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -308,14 +309,15 @@ def process_video(self, bucket_name, filename):
         for p in [vpath, apath]:
             if p and os.path.exists(p):
                 os.remove(p)
-            if bucket_name == "processing":
-                try:
-                    from xtr.utils import move_file_to_archive  # adjust import if needed
-                    archive_bucket = "archive"
-                    move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
+        if bucket_name == "processing":
+            try:
+                from xtr.utils import move_file_to_archive  # adjust import if needed
+                archive_bucket = "archive"
+                success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+                if success:
                     logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
-                except Exception as e:
-                    logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
+            except Exception as e:
+                logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # IMAGE TASK
@@ -394,7 +396,7 @@ def process_image(self, bucket_name, object_name):
                 except Exception:
                     clean_info[k] = str(v)
 
-            # 6️⃣ Save to MongoDB
+            # --- Upsert instead of insert ---
             ImageFile.objects(filename=object_name).update_one(
                 set__file_size=os.path.getsize(tmp_path),
                 set__width=img.size[0],
@@ -429,19 +431,21 @@ def process_image(self, bucket_name, object_name):
     finally:
         # ✅ Clean up temp file
         if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        # ✅ Move image to archive similar to other tasks when processed from 'processing'
+        if bucket_name == "processing":
             try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-        # ✅ Move file to archive ONLY if processing succeeded
-        if bucket_name == "processing" and status == "completed":
-            try:
-                archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status="completed")
-                logger.info(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
+                # determine status from DB record if present
+                img_doc = ImageFile.objects(filename=object_name).first()
+                status = getattr(img_doc, 'status', 'completed') if img_doc else 'completed'
+                archive_bucket = os.environ.get('MINIO_ARCHIVE_BUCKET', 'archive')
+                moved = move_file_to_archive(bucket_name, object_name, archive_bucket, status)
+                if moved:
+                    logger.info("[TASK] 📦 Moved image '%s' to '%s' (status=%s)", object_name, archive_bucket, status)
+                else:
+                    logger.info("[TASK] ⏭️ Image '%s' not moved (status=%s)", object_name, status)
             except Exception as e:
-                logger.error(f"[TASK] ⚠️ Could not move '{object_name}' to archive: {e}")
+                logger.error("[TASK] ⚠️ Could not move image '%s' to archive: %s", object_name, e)
 
 
 
@@ -521,8 +525,9 @@ def process_doc(bucket_name, object_name):
             try:
                 from xtr.utils import move_file_to_archive  # adjust import if needed
                 archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status="completed")
-                print(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
+                success = move_file_to_archive(bucket_name, object_name, archive_bucket, "completed")
+                if success:
+                    print(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
                 print(f"[TASK] ⚠️ Could not move '{object_name}' to archive: {e}")
 
@@ -570,8 +575,9 @@ def process_html(bucket_name, filename):
         try:
             from xtr.utils import move_file_to_archive  # adjust import if needed
             archive_bucket = "archive"
-            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+            if success:
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
             print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -592,8 +598,9 @@ def process_json(bucket_name, filename):
         try:
             from xtr.utils import move_file_to_archive  # adjust import if needed
             archive_bucket = "archive"
-            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+            if success:
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
             print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -615,8 +622,9 @@ def process_xml(bucket_name, filename):
         try:
             from xtr.utils import move_file_to_archive  # adjust import if needed
             archive_bucket = "archive"
-            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+            if success:
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
             print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -636,8 +644,9 @@ def process_log(bucket_name, filename):
         try:
             from xtr.utils import move_file_to_archive  # adjust import if needed
             archive_bucket = "archive"
-            move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+            success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+            if success:
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
             print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -694,8 +703,9 @@ def process_yaml(self, bucket_name, filename):
             try:
                 from xtr.utils import move_file_to_archive  # adjust import if needed
                 archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+                success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+                if success:
+                    print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
                 print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
                 
@@ -768,8 +778,9 @@ def process_ppt(self, bucket_name, filename):
         if bucket_name == "processing" and status == "completed":
             try:
                 archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
-                logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' → '{archive_bucket}'")
+                success = move_file_to_archive(bucket_name, filename, archive_bucket, status=status)
+                if success:
+                    logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' → '{archive_bucket}'")
             except Exception as e:
                 logger.error(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
@@ -930,8 +941,9 @@ def process_spreadsheet(self, bucket_name, filename):
             try:
                 from xtr.utils import move_file_to_archive  # adjust import if needed
                 archive_bucket = "archive"
-                move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status="completed")
-                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+                success = move_file_to_archive(bucket_name, filename, archive_bucket, "completed")
+                if success:
+                    print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
                 print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 

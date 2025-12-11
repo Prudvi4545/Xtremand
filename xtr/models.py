@@ -1,5 +1,6 @@
 from mongoengine import *
 from datetime import datetime, timezone
+from mongoengine import Document, StringField, IntField, DictField, DateTimeField
 
 # ------------------------
 # Audio, Video, Document Files
@@ -27,7 +28,7 @@ class DocumentFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class HtmlFile(Document):
@@ -35,7 +36,7 @@ class HtmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class JsonFile(Document):
@@ -43,7 +44,7 @@ class JsonFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class XmlFile(Document):
@@ -51,7 +52,7 @@ class XmlFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class LogFile(Document):
@@ -59,7 +60,7 @@ class LogFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class PPTFile(Document):
@@ -67,7 +68,7 @@ class PPTFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     meta = {
         'collection': 'ppt_file'  # Custom collection name
     }
@@ -77,7 +78,7 @@ class SpreadsheetFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class ArchiveFile(Document):
@@ -85,19 +86,22 @@ class ArchiveFile(Document):
     content = StringField()
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
 
 
 class YamlFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     content = StringField()
-    status = StringField(max_length=20, default='pending')
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    status = StringField(max_length=50, default='pending')
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     meta_data = DictField() 
 
 # ------------------------
 # Images
 # ------------------------
+
+
+
 class ImageFile(Document):
     filename = StringField(max_length=255, unique=True, required=True)
     file_path = StringField(max_length=1024)
@@ -107,7 +111,24 @@ class ImageFile(Document):
     format = StringField(max_length=50)
     status = StringField(max_length=50, default='pending')
     meta_data = DictField()
-    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
+    # ✅ NEW:
+    updated_at = DateTimeField(default=lambda: datetime.now(timezone.utc))
+    status = StringField(max_length=50, default="completed")
 
     def __str__(self):
         return self.filename
+        return self.filename
+
+    # ✅ OPTIONAL convenience (used in task)
+    def mark_completed(self):
+        self.status = "completed"
+        self.updated_at = datetime.utcnow()
+        self.save()
+
+    def mark_failed(self, error_message: str):
+        self.status = "failed"
+        self.meta_data = {"error": error_message}
+        self.updated_at = datetime.utcnow()
+        self.save()
+

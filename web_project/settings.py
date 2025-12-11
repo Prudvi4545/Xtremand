@@ -17,6 +17,10 @@ WSGI_APPLICATION = 'web_project.wsgi.application'
 # ===============================
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-insecure-key')
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+# Environment marker used across the project to switch local vs server configs
+# e.g. set DJANGO_DB_ENV=server on the host to enable production behaviour
+DB_ENV = os.environ.get("DJANGO_DB_ENV", "local")
+
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
 # ===============================
@@ -31,33 +35,6 @@ INSTALLED_APPS = [
     'xtr',
 ]
 
-# ===============================
-# MongoEngine Configuration
-# ===============================
-DB_ENV = os.environ.get('DJANGO_DB_ENV', 'local')
-try:
-    mongoengine.disconnect(alias="default")
-except Exception:
-    pass
-
-if DB_ENV == 'server':
-    mongoengine.connect(
-        db='xtremand_qa',
-        host= 'mongodb://154.210.235.101:27017',
-        username= 'Xtremand',
-        password= 'Xtremand@321',
-        authentication_source='admin',
-        alias="default"
-    )
-else:
-    mongoengine.connect(
-        db='xtremand_qa',
-        host='mongodb://localhost:27017',
-        username='admin',
-        password='StrongAdminPassword123',
-        authentication_source='admin',
-        alias="default"
-    )
 
 # ===============================
 # Django + Celery Config
@@ -84,6 +61,16 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ===============================
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+
+# ===============================
+# MongoDB Configuration
+# ===============================
+MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/xtremand_db')
+mongoengine.connect(
+    db='xtremand_db',
+    host=MONGODB_URI,
+    connectTimeoutMS=5000
+)
 
 # ===============================
 # Logging Configuration
