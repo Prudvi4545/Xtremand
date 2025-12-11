@@ -99,14 +99,15 @@ class YamlFile(Document):
 # Images
 # ------------------------
 class ImageFile(Document):
-    file_name = StringField(max_length=255, unique=True, required=True)
+    filename = StringField(max_length=255, unique=True, required=True)
     file_path = StringField(max_length=1024)
     file_size = IntField()
     width = IntField()
     height = IntField()
     format = StringField(max_length=50)
+    status = StringField(max_length=50, default='pending')
     meta_data = DictField()
     created_at = DateTimeField(default=datetime.utcnow, required=True)
 
     def __str__(self):
-        return self.file_name
+        return self.filename
