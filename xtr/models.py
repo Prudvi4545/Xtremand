@@ -109,6 +109,7 @@ class ImageFile(Document):
     width = IntField()
     height = IntField()
     format = StringField(max_length=50)
+    status = StringField(max_length=50, default='pending')
     meta_data = DictField()
     created_at = DateTimeField(default=lambda: datetime.now(timezone.utc), required=True)
     # ✅ NEW:
@@ -116,6 +117,7 @@ class ImageFile(Document):
     status = StringField(max_length=50, default="completed")
 
     def __str__(self):
+        return self.filename
         return self.filename
 
     # ✅ OPTIONAL convenience (used in task)

@@ -324,38 +324,65 @@ def process_video(self, bucket_name, filename):
 # ------------------------------------
 
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_image(self, bucket_name, object_name):
-    print(f"[TASK] 📷 Image: {object_name}")
+    """
+    Task: Process image files from MinIO 'processing' bucket.
+    Extracts metadata and moves completed files to 'archive' bucket.
+    """
     tmp_path = None
+    status = "failed"  # default status, will change to completed later
+
     try:
+        object_name = normalize_filename(object_name)
+        logger.info(f"[TASK] 📷 Processing image: {object_name}")
+
+        # 1️⃣ Download file from MinIO
         ext = os.path.splitext(object_name)[-1].lower()
         fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         minio_client.fget_object(bucket_name, object_name, tmp_path)
 
-        # --- Handle extension typos ---
-        typo_map = {".ppng": ".png", ".jiif": ".jfif"}
+        if not os.path.exists(tmp_path):
+            raise FileNotFoundError(f"Downloaded image file not found at {tmp_path}")
+
+        # 2️⃣ Handle extension typos (common mistranscriptions from uploads/events)
+        # Added .jif -> .jfif and a few common misspellings to match IMAGE_EXTENSIONS
+        typo_map = {
+            ".ppng": ".png",
+            ".jiif": ".jfif",
+            ".jif": ".jfif",
+            ".jgp": ".jpg",
+            ".jpe": ".jpeg",
+        }
         if ext in typo_map:
             new_path = tmp_path.replace(ext, typo_map[ext])
             os.rename(tmp_path, new_path)
             tmp_path = new_path
             ext = typo_map[ext]
 
-        # --- Enable HEIC/HEIF ---
+        # 3️⃣ Enable HEIC/HEIF support
         if ext in [".heic", ".heif"]:
-            from pillow_heif import register_heif_opener
-            register_heif_opener()
+            try:
+                from pillow_heif import register_heif_opener
+                register_heif_opener()
+            except Exception as e:
+                logger.warning(f"[TASK] ⚠️ Could not load HEIC support: {e}")
 
-        # --- Handle SVG (convert to PNG first) ---
+        # 4️⃣ Handle SVG (convert to PNG first)
         if ext == ".svg":
-            import cairosvg
-            png_path = tmp_path + ".png"
-            cairosvg.svg2png(url=tmp_path, write_to=png_path)
-            tmp_path = png_path
-            ext = ".png"
+            try:
+                import cairosvg
+                png_path = tmp_path + ".png"
+                cairosvg.svg2png(url=tmp_path, write_to=png_path)
+                os.remove(tmp_path)
+                tmp_path = png_path
+                ext = ".png"
+            except Exception as e:
+                logger.error(f"[TASK] ❌ Failed to convert SVG: {e}")
+                raise
 
-        # --- Open with Pillow ---
+        # 5️⃣ Open with Pillow and extract metadata
         with Image.open(tmp_path) as img:
             # Ensure standard mode
             if img.mode not in ("RGB", "L"):
@@ -374,18 +401,35 @@ def process_image(self, bucket_name, object_name):
                 set__file_size=os.path.getsize(tmp_path),
                 set__width=img.size[0],
                 set__height=img.size[1],
-                set__format=img.format,
+                set__format=img.format or ext,
+                set__status="completed",
                 set__meta_data={"mode": img.mode, "info": clean_info},
-                upsert=True  # ✅ insert if not exists, else update
+                set__created_at=datetime.now(timezone.utc),
+                upsert=True
             )
+            logger.info(f"[TASK] ✅ ImageFile saved: {object_name}")
 
-        print(f"[TASK] ✅ Image processed: {object_name}")
+        # ✅ Mark as completed
+        status = "completed"
 
-    except Exception as e:
-        print(f"[TASK] ❌ Error image {object_name}: {e}")
-        raise self.retry(exc=e)
+    except Exception as exc:
+        logger.error(f"[TASK] ❌ Failed image {object_name}: {exc}")
+        try:
+            ImageFile.objects(filename=object_name).update_one(
+                set__status="failed",
+                set__meta_data={"error": str(exc)},
+                set__created_at=datetime.now(timezone.utc),
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"[TASK] ❌ Failed saving failed image record: {e}")
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            logger.error(f"[TASK] Max retries reached for {object_name}")
 
     finally:
+        # ✅ Clean up temp file
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
         # ✅ Move image to archive similar to other tasks when processed from 'processing'

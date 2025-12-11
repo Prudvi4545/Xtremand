@@ -25,8 +25,8 @@ VIDEO_EXTENSIONS = frozenset({
 # ✅ IMAGE
 IMAGE_EXTENSIONS = frozenset({
     '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff',
-    '.heic', '.webp', '.raw', '.svg','.ico',     
-'.psd',    '.ai',       '.indd',     '.jfif',
+    '.heic', '.webp', '.raw', '.svg', '.ico',
+    '.psd', '.ai', '.indd', '.jfif',
 })
 
 # ✅ DOCUMENT
@@ -138,11 +138,10 @@ def normalize_filename(filename: str) -> str:
 
 
 
-def move_file_to_archive(source_bucket: str, object_key: str, archive_bucket: str, status: str = "completed") -> bool:
-    """Move an object from source_bucket to archive_bucket when allowed.
 
-    Returns True on success, False otherwise.
-    If status != 'completed' the function will skip moving and return False.
+def move_file_to_archive(minio_client, source_bucket, object_key, archive_bucket, status):
+    """
+    Moves a file from processing → archive only when status == 'completed'.
     """
     if status != "completed":
         logger.debug("Skipping move: %s not completed (status=%s)", object_key, status)
