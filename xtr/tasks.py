@@ -344,8 +344,15 @@ def process_image(self, bucket_name, object_name):
         if not os.path.exists(tmp_path):
             raise FileNotFoundError(f"Downloaded image file not found at {tmp_path}")
 
-        # 2️⃣ Handle extension typos
-        typo_map = {".ppng": ".png", ".jiif": ".jfif"}
+        # 2️⃣ Handle extension typos (common mistranscriptions from uploads/events)
+        # Added .jif -> .jfif and a few common misspellings to match IMAGE_EXTENSIONS
+        typo_map = {
+            ".ppng": ".png",
+            ".jiif": ".jfif",
+            ".jif": ".jfif",
+            ".jgp": ".jpg",
+            ".jpe": ".jpeg",
+        }
         if ext in typo_map:
             new_path = tmp_path.replace(ext, typo_map[ext])
             os.rename(tmp_path, new_path)

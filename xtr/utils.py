@@ -22,8 +22,8 @@ VIDEO_EXTENSIONS = frozenset({
 # ✅ IMAGE
 IMAGE_EXTENSIONS = frozenset({
     '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff',
-    '.heic', '.webp', '.raw', '.svg','.ico',     
-'.psd',    '.ai',       '.indd',     '.jfif',
+    '.heic', '.webp', '.raw', '.svg', '.ico',
+    '.psd', '.ai', '.indd', '.jfif',
 })
 
 # ✅ DOCUMENT
