@@ -40,14 +40,10 @@ minio_client = get_minio_client()
 
 @shared_task(bind=True)
 def process_minio_file(self, bucket_name, object_name):
-    # 🚫 HARD STOP for non-processing buckets
+
+    # 🚫 HARD STOP for non-processing buckets (no log)
     if bucket_name != "processing":
-        logger.warning(
-            "[TASK] ⛔ Ignoring file from bucket '%s': %s",
-            bucket_name,
-            object_name,
-        )
-        return  # ⬅️ THIS RETURN IS CRITICAL
+        return  # Only process the 'processing' bucket, no log
 
     logger.warning(
         "[TASK] 🚀 New file event: %s in bucket: %s",
