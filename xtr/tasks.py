@@ -38,10 +38,27 @@ minio_client = get_minio_client()
 
 ###########
 
-@shared_task
-def process_minio_file(bucket_name, object_key):
-    print(f"[TASK] 🚀 New file event: {object_key} in bucket: {bucket_name}")
-    auto_discover_and_process.delay(bucket_name, object_key)
+@shared_task(bind=True)
+def process_minio_file(self, bucket_name, object_name):
+    # 🚫 HARD STOP for non-processing buckets
+    if bucket_name != "processing":
+        logger.warning(
+            "[TASK] ⛔ Ignoring file from bucket '%s': %s",
+            bucket_name,
+            object_name,
+        )
+        return  # ⬅️ THIS RETURN IS CRITICAL
+
+    logger.warning(
+        "[TASK] 🚀 New file event: %s in bucket: %s",
+        object_name,
+        bucket_name,
+    )
+
+    # ✅ Only processing bucket reaches here
+    auto_discover_and_process.delay("processing")
+
+
 
 @shared_task
 def fetch_all_buckets_and_objects():
@@ -65,6 +82,8 @@ def auto_discover_and_process(bucket_name=None, filename=None):
     if not bucket_name:
         print("[TASK] ⚠️ Missing bucket_name")
         return
+    if bucket_name != "processing":
+        return  # Only process the 'processing' bucket
 
     files = [type("obj", (object,), {"object_name": filename})] if filename else list_objects(bucket_name)
 
