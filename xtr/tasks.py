@@ -27,10 +27,14 @@ from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
+
+from xtr import minio_client
+
 from .minio_client import get_minio_client
 
 # ✅ Define minio_client for backward compatibility
 minio_client = get_minio_client()
+
 
 ###########
 
