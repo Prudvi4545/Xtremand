@@ -16,7 +16,7 @@ from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
 )
-from .minio_client import get_minio_client, list_objects
+from .minio_client import get_minio_client, list_objects 
 from .utils import detect_file_type, SPREADSHEET_EXTENSIONS, normalize_filename
 from .minio_client import move_object
 from pathlib import Path
@@ -27,7 +27,10 @@ from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
+from .minio_client import get_minio_client
 
+# ✅ Define minio_client for backward compatibility
+minio_client = get_minio_client()
 
 ###########
 
@@ -625,7 +628,7 @@ def process_xml(bucket_name, filename):
     if bucket_name == "processing":
         archive_bucket = "archive"
         status = "completed"  # Set status based on processing outcome
-        success = move_file_to_archive(bucket_name, filename, archive_bucket, status)
+        success = move_object(bucket_name, filename, archive_bucket, status)
         if success:
             print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         else:
