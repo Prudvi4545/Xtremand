@@ -11,17 +11,21 @@ logger = logging.getLogger(__name__)
 # Environment
 # -----------------------------
 DB_ENV = os.getenv("DJANGO_DB_ENV", "local")
+logger.warning("🔍 MinIO initializing in [%s] environment", DB_ENV)
 
 if DB_ENV == "server":
     MINIO_HOST = os.getenv("MINIO_HOST", "127.0.0.1:9000")
-    MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "Xtremand")
-    MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "Xtremand@321")
+    MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
+    MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
     MINIO_SECURE = False
 else:
     MINIO_HOST = "localhost:9000"
     MINIO_ACCESS_KEY = "minioadmin"
     MINIO_SECRET_KEY = "minioadmin"
     MINIO_SECURE = False
+
+if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
+    raise RuntimeError("❌ MinIO credentials are not set correctly")
 
 # -----------------------------
 # Singleton MinIO client
@@ -47,9 +51,6 @@ def list_objects(bucket_name, recursive=True):
 
 
 def move_object(source_bucket: str, object_name: str, dest_bucket: str) -> bool:
-    """
-    Copy object to dest bucket and delete from source bucket
-    """
     try:
         client = get_minio_client()
         src = CopySource(source_bucket, object_name)
@@ -58,5 +59,5 @@ def move_object(source_bucket: str, object_name: str, dest_bucket: str) -> bool:
         logger.info("📦 Moved %s: %s → %s", object_name, source_bucket, dest_bucket)
         return True
     except Exception as e:
-        logger.error("❌ Failed to move %s: %s", object_name, e)
+        logger.exception("❌ Failed to move %s", object_name)
         return False

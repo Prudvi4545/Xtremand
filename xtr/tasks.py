@@ -28,9 +28,6 @@ from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
 
-from xtr import minio_client
-
-
 
 ###########
 
