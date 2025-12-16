@@ -16,8 +16,9 @@ from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
 )
-from .minio_client import minio_client, list_objects, get_minio_client
-from .utils import detect_file_type, SPREADSHEET_EXTENSIONS, normalize_filename, move_file_to_archive
+from .minio_client import get_minio_client, list_objects
+from .utils import detect_file_type, SPREADSHEET_EXTENSIONS, normalize_filename
+from .minio_client import move_object
 from pathlib import Path
 from pymongo import MongoClient
 from faster_whisper import WhisperModel
@@ -26,6 +27,8 @@ from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
+
+from xtr import minio_client
 
 
 
@@ -41,7 +44,7 @@ def fetch_all_buckets_and_objects():
     print("[TASK] 🚀 Fetching all buckets and their objects from MinIO...")
     skip_bucket = "archive"  # bucket you want to skip
     try:
-        for bucket in minio_client.list_buckets():
+        for bucket in get_minio_client().list_buckets():
             bucket_name = bucket.name
             if bucket_name == skip_bucket:
                 continue  # Skip this bucket!
@@ -232,7 +235,7 @@ def process_audio(self, bucket_name, filename):
         if bucket_name == "processing" and status == "completed":
             try:
                 archive_bucket = "archive"
-                success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                success = move_object(bucket_name, filename, archive_bucket)
                 if success:
                     logger.info(f"[TASK] 📦 Moved '{filename}' to archive")
                 else:
@@ -314,7 +317,7 @@ def process_video(self, bucket_name, filename):
                 archive_bucket = "archive"
                 doc = VideoFile.objects(filename=filename).first()
                 status = doc.status if doc else "completed"
-                success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                success = move_object(bucket_name, filename, archive_bucket)
                 if success:
                     logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
@@ -440,7 +443,7 @@ def process_image(self, bucket_name, object_name):
                 img_doc = ImageFile.objects(filename=object_name).first()
                 status = getattr(img_doc, 'status', 'completed') if img_doc else 'completed'
                 archive_bucket = os.environ.get('MINIO_ARCHIVE_BUCKET', 'archive')
-                moved = move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status)
+                moved = move_object(bucket_name, object_name, archive_bucket)
                 if moved:
                     logger.info("[TASK] 📦 Moved image '%s' to '%s' (status=%s)", object_name, archive_bucket, status)
                 else:
@@ -527,7 +530,7 @@ def process_doc(bucket_name, object_name):
                 archive_bucket = "archive"
                 doc = DocumentFile.objects(filename=object_name).first()
                 status = doc.status if doc else "completed"
-                success = move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status)
+                success = move_object(bucket_name, object_name, archive_bucket)
                 if success:
                     print(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
@@ -578,7 +581,7 @@ def process_html(bucket_name, filename):
             archive_bucket = "archive"
             doc = HtmlFile.objects(filename=filename).first()
             status = doc.status if doc else "completed"
-            success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+            success = move_object(bucket_name, filename, archive_bucket)
             if success:
                 print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
@@ -602,7 +605,7 @@ def process_json(bucket_name, filename):
             archive_bucket = "archive"
             doc = JsonFile.objects(filename=filename).first()
             status = doc.status if doc else "completed"
-            success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+            success = move_object(bucket_name, filename, archive_bucket)
             if success:
                 print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
@@ -623,15 +626,13 @@ def process_xml(bucket_name, filename):
     except Exception as e:
         XmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
     if bucket_name == "processing":
-        try:
-            from xtr.utils import move_file_to_archive  # adjust import if needed
-            archive_bucket = "archive"
-            status = "completed"  # Set status based on processing outcome
-            success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
-            if success:
-                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
-        except Exception as e:
-            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
+        archive_bucket = "archive"
+        status = "completed"  # Set status based on processing outcome
+        success = move_file_to_archive(bucket_name, filename, archive_bucket, status)
+        if success:
+            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        else:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive.")
 
 # ------------------------------------
 # LOG TASK
@@ -650,7 +651,7 @@ def process_log(bucket_name, filename):
             archive_bucket = "archive"
             doc = LogFile.objects(filename=filename).first()
             status = doc.status if doc else "completed"
-            success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+            success = move_object(bucket_name, filename, archive_bucket)
             if success:
                 print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
         except Exception as e:
@@ -710,7 +711,7 @@ def process_yaml(self, bucket_name, filename):
                 archive_bucket = "archive"
                 doc = YamlFile.objects(filename=filename).first()
                 status = doc.status if doc else "completed"
-                success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                success = move_object(bucket_name, filename, archive_bucket)
                 if success:
                     print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
@@ -785,7 +786,7 @@ def process_ppt(self, bucket_name, filename):
         if bucket_name == "processing" and status == "completed":
             try:
                 archive_bucket = "archive"
-                success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                success = move_object(bucket_name, filename, archive_bucket)
                 if success:
                     logger.info(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' → '{archive_bucket}'")
             except Exception as e:
@@ -949,7 +950,7 @@ def process_spreadsheet(self, bucket_name, filename):
                 archive_bucket = "archive"
                 doc = SpreadsheetFile.objects(filename=filename).first()
                 status = doc.status if doc else "completed"
-                success = move_file_to_archive(minio_client, bucket_name, filename, archive_bucket, status)
+                success = move_object(bucket_name, filename, archive_bucket)
                 if success:
                     print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:
@@ -1062,7 +1063,7 @@ def process_archive(bucket_name, object_name):
                 archive_bucket = "archive"
                 doc = ArchiveFile.objects(filename=object_name).first()
                 status = doc.status if doc else "completed"
-                success = move_file_to_archive(minio_client, bucket_name, object_name, archive_bucket, status)
+                success = move_object(bucket_name, object_name, archive_bucket)
                 if success:
                     print(f"[TASK] 📦 Moved '{object_name}' from '{bucket_name}' to '{archive_bucket}'")
             except Exception as e:

@@ -133,31 +133,3 @@ def normalize_filename(filename: str) -> str:
     Example: "How+to+Copy%20Dashboard.mp4" → "How to Copy Dashboard.mp4"
     """
     return urllib.parse.unquote(filename.replace("+", " "))
-
-
-
-
-
-
-def move_file_to_archive(minio_client, source_bucket, object_key, archive_bucket, status):
-    """
-    Moves a file from processing → archive only when status == 'completed'.
-    """
-    if status != "completed":
-        logger.debug("Skipping move: %s not completed (status=%s)", object_key, status)
-        return False
-
-    try:
-        client = get_minio_client()
-        source = CopySource(source_bucket, object_key)
-        client.copy_object(archive_bucket, object_key, source)
-        logger.info("Copied '%s' from '%s' to '%s'", object_key, source_bucket, archive_bucket)
-        client.remove_object(source_bucket, object_key)
-        logger.info("Deleted '%s' from '%s'", object_key, source_bucket)
-        return True
-    except S3Error as e:
-        logger.error("S3Error moving '%s' to '%s': %s", object_key, archive_bucket, e)
-        return False
-    except Exception as e:
-        logger.exception("Unexpected error moving '%s' to '%s': %s", object_key, archive_bucket, e)
-        return False
