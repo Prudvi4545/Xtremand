@@ -11,7 +11,6 @@ from pptx import Presentation
 from pydub import AudioSegment
 from PIL import Image
 import logging
-import subprocess
 from .models import (
     AudioFile, VideoFile, ImageFile, DocumentFile, HtmlFile,
     JsonFile, XmlFile, LogFile, PPTFile, SpreadsheetFile, ArchiveFile, YamlFile
@@ -132,11 +131,6 @@ def auto_discover_and_process(bucket_name=None, filename=None):
             print(f"[TASK] ⏭️ Skipped or unknown: {fname}")
 
 
-######
-
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # ----------------------------
 # FFMPEG / pydub setup
@@ -151,29 +145,56 @@ AudioSegment.ffprobe = FFPROBE_EXE
 # ----------------------------
 # Load Faster-Whisper
 # ----------------------------
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")  # tiny/base for CPU
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
 
-try:
-    WHISPER_MODEL = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-    logger.info(f"✅ Loaded Faster-Whisper '{MODEL_SIZE}' on {DEVICE} ({COMPUTE_TYPE})")
-except Exception as e:
-    logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
-    WHISPER_MODEL = None
+
+logger = logging.getLogger(__name__)
+
+_MODEL = None
+
+def get_whisper_model():
+    global _MODEL
+
+    if _MODEL is None:
+        # Read configuration from environment variables
+        model_size = os.getenv("WHISPER_MODEL", "tiny")  # default to 'tiny'
+        device_env = os.getenv("WHISPER_DEVICE", None)   # optional override
+        compute_type_env = os.getenv("WHISPER_COMPUTE_TYPE", None)  # optional override
+
+        # Determine device: use environment override if provided
+        if device_env:
+            device = device_env
+        else:
+            # Auto-detect GPU availability
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Determine compute_type: use environment override if provided
+        if compute_type_env:
+            compute_type = compute_type_env
+        else:
+            compute_type = "float16" if device == "cuda" else "int8"
+
+        try:
+            logger.info(f"🚀 Loading Faster-Whisper model '{model_size}' on {device} ({compute_type})...")
+            _MODEL = WhisperModel(model_size, device=device, compute_type=compute_type)
+            logger.info("✅ Faster-Whisper model loaded successfully.")
+        except Exception as e:
+            logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
+            _MODEL = None
+
+    return _MODEL
 
 # ----------------------------
 # Helper: Transcribe file with per-segment logging
 # ----------------------------
 
 def transcribe_file(file_path: str, language: str = None):
-    if WHISPER_MODEL is None:
+    if get_whisper_model() is None:
         raise RuntimeError("Faster-Whisper model not loaded")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
     logger.info(f"🔊 Starting transcription for {file_path}")
-    segments, info = WHISPER_MODEL.transcribe(file_path, language=language)
+    segments, info = get_whisper_model().transcribe(file_path, language=language)
     segments = list(segments)
     # Log each segment
     for i, seg in enumerate(segments, start=1):
