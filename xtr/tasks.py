@@ -666,13 +666,15 @@ def process_xml(bucket_name, filename):
     except Exception as e:
         XmlFile.objects.create(filename=filename, content="", status="failed", meta_data={"error": str(e)})
     if bucket_name == "processing":
-        archive_bucket = "archive"
-        status = "completed"  # Set status based on processing outcome
-        success = move_object(bucket_name, filename, archive_bucket, status)
-        if success:
-            print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
-        else:
-            print(f"[TASK] ⚠️ Could not move '{filename}' to archive.")
+        try:
+            archive_bucket = "archive"
+            doc = XmlFile.objects(filename=filename).first()
+            status = doc.status if doc else "completed"
+            success = move_object(bucket_name, filename, archive_bucket)
+            if success:
+                print(f"[TASK] 📦 Moved '{filename}' from '{bucket_name}' to '{archive_bucket}'")
+        except Exception as e:
+            print(f"[TASK] ⚠️ Could not move '{filename}' to archive: {e}")
 
 # ------------------------------------
 # LOG TASK
