@@ -366,31 +366,40 @@ def process_video(self, bucket_name, filename):
 # ------------------------------------
 # IMAGE TASK
 # ------------------------------------
+from minio.error import S3Error
+from datetime import datetime, timezone
+import os, tempfile
+from PIL import Image
 
-@shared_task(bind=True,max_retries=3, default_retry_delay=60)
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_image(self, bucket_name, object_name):
-    """
-    Task: Process image files from MinIO 'processing' bucket.
-    Extracts metadata and moves completed files to 'archive' bucket.
-    """
     tmp_path = None
-    status = "failed"  # default status, will change to completed later
+    status = "failed"
+
+    object_name = normalize_filename(object_name)
+    logger.info(f"[TASK] 📷 Processing image: {object_name}")
 
     try:
-        object_name = normalize_filename(object_name)
-        logger.info(f"[TASK] 📷 Processing image: {object_name}")
+        # ✅ 1. Check if object still exists (CRITICAL)
+        try:
+            minio_client.stat_object(bucket_name, object_name)
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                logger.warning(f"[TASK] ⏭️ Image already processed: {object_name}")
+                return
+            raise
 
-        # 1️⃣ Download file from MinIO
+        # ✅ 2. Download
         ext = os.path.splitext(object_name)[-1].lower()
         fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
+
         minio_client.fget_object(bucket_name, object_name, tmp_path)
 
         if not os.path.exists(tmp_path):
-            raise FileNotFoundError(f"Downloaded image file not found at {tmp_path}")
+            raise FileNotFoundError("Downloaded file missing")
 
-        # 2️⃣ Handle extension typos (common mistranscriptions from uploads/events)
-        # Added .jif -> .jfif and a few common misspellings to match IMAGE_EXTENSIONS
+        # ✅ 3. Extension typo fixes
         typo_map = {
             ".ppng": ".png",
             ".jiif": ".jfif",
@@ -404,42 +413,30 @@ def process_image(self, bucket_name, object_name):
             tmp_path = new_path
             ext = typo_map[ext]
 
-        # 3️⃣ Enable HEIC/HEIF support
-        if ext in [".heic", ".heif"]:
+        # ✅ 4. HEIC support
+        if ext in (".heic", ".heif"):
             try:
                 from pillow_heif import register_heif_opener
                 register_heif_opener()
             except Exception as e:
-                logger.warning(f"[TASK] ⚠️ Could not load HEIC support: {e}")
+                logger.warning(f"[TASK] ⚠️ HEIC support issue: {e}")
 
-        # 4️⃣ Handle SVG (convert to PNG first)
+        # ✅ 5. SVG → PNG
         if ext == ".svg":
-            try:
-                import cairosvg
-                png_path = tmp_path + ".png"
-                cairosvg.svg2png(url=tmp_path, write_to=png_path)
-                os.remove(tmp_path)
-                tmp_path = png_path
-                ext = ".png"
-            except Exception as e:
-                logger.error(f"[TASK] ❌ Failed to convert SVG: {e}")
-                raise
+            import cairosvg
+            png_path = tmp_path + ".png"
+            cairosvg.svg2png(url=tmp_path, write_to=png_path)
+            os.remove(tmp_path)
+            tmp_path = png_path
+            ext = ".png"
 
-        # 5️⃣ Open with Pillow and extract metadata
+        # ✅ 6. Process image
         with Image.open(tmp_path) as img:
-            # Ensure standard mode
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
 
-            # Clean metadata
-            clean_info = {}
-            for k, v in img.info.items():
-                try:
-                    clean_info[k] = float(v) if hasattr(v, "__float__") else str(v)
-                except Exception:
-                    clean_info[k] = str(v)
+            clean_info = {k: str(v) for k, v in img.info.items()}
 
-            # --- Upsert instead of insert ---
             ImageFile.objects(filename=object_name).update_one(
                 set__file_size=os.path.getsize(tmp_path),
                 set__width=img.size[0],
@@ -450,43 +447,44 @@ def process_image(self, bucket_name, object_name):
                 set__created_at=datetime.now(timezone.utc),
                 upsert=True
             )
-            logger.info(f"[TASK] ✅ ImageFile saved: {object_name}")
-        # ✅ Mark as completed
+
+        logger.info(f"[TASK] ✅ ImageFile saved: {object_name}")
         status = "completed"
-    except Exception as exc: 
+
+    except S3Error as exc:
+        # ✅ NEVER retry NoSuchKey
+        if exc.code == "NoSuchKey":
+            logger.warning(f"[TASK] ⏭️ File disappeared (already moved): {object_name}")
+            return
+        raise self.retry(exc=exc)
+
+    except Exception as exc:
         logger.error(f"[TASK] ❌ Failed image {object_name}: {exc}")
-        try:
-            ImageFile.objects(filename=object_name).update_one(
-                set__status="failed",
-                set__meta_data={"error": str(exc)},
-                set__created_at=datetime.now(timezone.utc),
-                upsert=True
-            )
-        except Exception as e:
-            logger.error(f"[TASK] ❌ Failed saving failed image record: {e}")
-        try:
-            self.retry(exc=exc)
-        except self.MaxRetriesExceededError:
-            logger.error(f"[TASK] Max retries reached for {object_name}")
+        ImageFile.objects(filename=object_name).update_one(
+            set__status="failed",
+            set__meta_data={"error": str(exc)},
+            set__created_at=datetime.now(timezone.utc),
+            upsert=True
+        )
+        raise self.retry(exc=exc)
+
     finally:
-        # ✅ Clean up temp file
+        # ✅ cleanup temp
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        # ✅ Move image to archive similar to other tasks when processed from 'processing'
+
+        # ✅ move only if object STILL exists
         if bucket_name == "processing":
             try:
-                # determine status from DB record if present
-                img_doc = ImageFile.objects(filename=object_name).first()
-                status = getattr(img_doc, 'status', 'completed') if img_doc else 'completed'
-                archive_bucket = os.environ.get('MINIO_ARCHIVE_BUCKET', 'archive')
-                moved = move_object(bucket_name, object_name, archive_bucket)
-                if moved:
-                    logger.info("[TASK] 📦 Moved image '%s' to '%s' (status=%s)", object_name, archive_bucket, status)
+                minio_client.stat_object(bucket_name, object_name)
+                archive_bucket = os.getenv("MINIO_ARCHIVE_BUCKET", "archive")
+                move_object(bucket_name, object_name, archive_bucket)
+                logger.info(f"[TASK] 📦 Moved image '{object_name}' → archive")
+            except S3Error as e:
+                if e.code == "NoSuchKey":
+                    logger.info(f"[TASK] ⏭️ Already moved: {object_name}")
                 else:
-                    logger.info("[TASK] ⏭️ Image '%s' not moved (status=%s)", object_name, status)
-            except Exception as e:
-                logger.error("[TASK] ⚠️ Could not move image '%s' to archive: %s", object_name, e)  
-
+                    logger.error(f"[TASK] ⚠️ Move failed: {e}")
 
 # ------------------------------------
 # DOCUMENT TASK
