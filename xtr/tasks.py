@@ -367,8 +367,7 @@ def process_video(self, bucket_name, filename):
 # IMAGE TASK
 # ------------------------------------
 
-
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+@shared_task(bind=True,max_retries=3, default_retry_delay=60)
 def process_image(self, bucket_name, object_name):
     """
     Task: Process image files from MinIO 'processing' bucket.
@@ -452,11 +451,9 @@ def process_image(self, bucket_name, object_name):
                 upsert=True
             )
             logger.info(f"[TASK] ✅ ImageFile saved: {object_name}")
-
         # ✅ Mark as completed
         status = "completed"
-
-    except Exception as exc:
+    except Exception as exc: 
         logger.error(f"[TASK] ❌ Failed image {object_name}: {exc}")
         try:
             ImageFile.objects(filename=object_name).update_one(
@@ -471,7 +468,6 @@ def process_image(self, bucket_name, object_name):
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             logger.error(f"[TASK] Max retries reached for {object_name}")
-
     finally:
         # ✅ Clean up temp file
         if tmp_path and os.path.exists(tmp_path):
@@ -489,8 +485,7 @@ def process_image(self, bucket_name, object_name):
                 else:
                     logger.info("[TASK] ⏭️ Image '%s' not moved (status=%s)", object_name, status)
             except Exception as e:
-                logger.error("[TASK] ⚠️ Could not move image '%s' to archive: %s", object_name, e)
-
+                logger.error("[TASK] ⚠️ Could not move image '%s' to archive: %s", object_name, e)  
 
 
 # ------------------------------------
