@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 from celery.signals import worker_process_init
 from mongoengine import connect
 from xtr.utils import extract_ppt_text
+from minio.error import S3Error
 
 from xtr import minio_client
 
@@ -366,38 +367,32 @@ def process_video(self, bucket_name, filename):
 # ------------------------------------
 # IMAGE TASK
 # ------------------------------------
-from minio.error import S3Error
-from datetime import datetime, timezone
-import os, tempfile
-from PIL import Image
+
+
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_image(self, bucket_name, object_name):
     tmp_path = None
-    status = "failed"
-
     object_name = normalize_filename(object_name)
+
     logger.info(f"[TASK] 📷 Processing image: {object_name}")
 
     try:
-        # ✅ 1. Check if object still exists (CRITICAL)
+        # ✅ 1. Check object existence (CRITICAL)
         try:
             minio_client.stat_object(bucket_name, object_name)
         except S3Error as e:
             if e.code == "NoSuchKey":
-                logger.warning(f"[TASK] ⏭️ Image already processed: {object_name}")
+                logger.warning(f"[TASK] ⏭️ Already processed: {object_name}")
                 return
             raise
 
         # ✅ 2. Download
-        ext = os.path.splitext(object_name)[-1].lower()
+        ext = os.path.splitext(object_name)[1].lower()
         fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
 
         minio_client.fget_object(bucket_name, object_name, tmp_path)
-
-        if not os.path.exists(tmp_path):
-            raise FileNotFoundError("Downloaded file missing")
 
         # ✅ 3. Extension typo fixes
         typo_map = {
@@ -406,6 +401,7 @@ def process_image(self, bucket_name, object_name):
             ".jif": ".jfif",
             ".jgp": ".jpg",
             ".jpe": ".jpeg",
+            ".tif": ".tiff",
         }
         if ext in typo_map:
             new_path = tmp_path.replace(ext, typo_map[ext])
@@ -415,11 +411,8 @@ def process_image(self, bucket_name, object_name):
 
         # ✅ 4. HEIC support
         if ext in (".heic", ".heif"):
-            try:
-                from pillow_heif import register_heif_opener
-                register_heif_opener()
-            except Exception as e:
-                logger.warning(f"[TASK] ⚠️ HEIC support issue: {e}")
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
 
         # ✅ 5. SVG → PNG
         if ext == ".svg":
@@ -430,31 +423,28 @@ def process_image(self, bucket_name, object_name):
             tmp_path = png_path
             ext = ".png"
 
-        # ✅ 6. Process image
+        # ✅ 6. Image processing
         with Image.open(tmp_path) as img:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
 
-            clean_info = {k: str(v) for k, v in img.info.items()}
-
             ImageFile.objects(filename=object_name).update_one(
                 set__file_size=os.path.getsize(tmp_path),
-                set__width=img.size[0],
-                set__height=img.size[1],
+                set__width=img.width,
+                set__height=img.height,
                 set__format=img.format or ext,
                 set__status="completed",
-                set__meta_data={"mode": img.mode, "info": clean_info},
+                set__meta_data={"mode": img.mode},
                 set__created_at=datetime.now(timezone.utc),
                 upsert=True
             )
 
         logger.info(f"[TASK] ✅ ImageFile saved: {object_name}")
-        status = "completed"
 
     except S3Error as exc:
         # ✅ NEVER retry NoSuchKey
         if exc.code == "NoSuchKey":
-            logger.warning(f"[TASK] ⏭️ File disappeared (already moved): {object_name}")
+            logger.warning(f"[TASK] ⏭️ Object vanished: {object_name}")
             return
         raise self.retry(exc=exc)
 
@@ -469,22 +459,23 @@ def process_image(self, bucket_name, object_name):
         raise self.retry(exc=exc)
 
     finally:
-        # ✅ cleanup temp
+        # ✅ Cleanup temp
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-        # ✅ move only if object STILL exists
+        # ✅ Move ONLY if still exists
         if bucket_name == "processing":
             try:
                 minio_client.stat_object(bucket_name, object_name)
                 archive_bucket = os.getenv("MINIO_ARCHIVE_BUCKET", "archive")
                 move_object(bucket_name, object_name, archive_bucket)
-                logger.info(f"[TASK] 📦 Moved image '{object_name}' → archive")
+                logger.info(f"[TASK] 📦 Moved '{object_name}' → archive")
             except S3Error as e:
                 if e.code == "NoSuchKey":
                     logger.info(f"[TASK] ⏭️ Already moved: {object_name}")
                 else:
                     logger.error(f"[TASK] ⚠️ Move failed: {e}")
+
 
 # ------------------------------------
 # DOCUMENT TASK
